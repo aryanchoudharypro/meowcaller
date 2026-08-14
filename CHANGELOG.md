@@ -7,6 +7,18 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### engine/video-state — `implemented`
+
+- On incoming 1:1 calls, `SetVideoEnabled` and `SetVideoOrientation` are
+  parked until the deferred callee `<accept>` is actually on the wire, then
+  applied in order. The engine reports `CallPhaseActive` on first decoded RTP,
+  ~100ms before the mute_v2-deferred accept goes out; a consumer toggling its
+  camera in that window (a call that starts as video) emitted a video-state
+  stanza no real client sends pre-accept, and the caller's phone kept
+  streaming video but went microphone-silent for the whole call.
+  Live-validated: audio flows on calls answered as video.
+
+
 ### media/relay-fanout — `implemented`
 
 - Bind and allocate on every relay in the offer for 1:1 calls, broadcast

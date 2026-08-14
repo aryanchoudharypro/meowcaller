@@ -76,6 +76,15 @@ type engineCall struct {
 
 	// The callee <accept> is deferred until the caller's <mute_v2> arrives.
 	acceptPending bool
+	// acceptSent flips once the <accept> is actually on the wire. Video-state
+	// stanzas sent before it are a sequence no real client produces, and phones
+	// react badly (observed: the caller's microphone goes silent while their
+	// camera keeps streaming). pendingVideoEnable and pendingVideoOrientation
+	// hold toggles that arrived early; they are applied right after the accept
+	// goes out.
+	acceptSent              bool
+	pendingVideoEnable      *bool
+	pendingVideoOrientation *int
 }
 
 // newEngine creates the engine for a Client.
@@ -346,6 +355,16 @@ func (e *engine) setVideoEnabled(callID string, enabled bool) error {
 		e.mu.Unlock()
 		return errors.New("meowcaller: call is not active")
 	}
+	// On an incoming 1:1 call the <accept> is deferred until the caller's
+	// mute_v2; a video-state stanza racing ahead of it is out-of-sequence for
+	// the peer. Park the request and let sendAccept apply it.
+	if !m.group && m.direction == CallDirectionIncoming && !m.acceptSent {
+		v := enabled
+		m.pendingVideoEnable = &v
+		e.mu.Unlock()
+		e.c.log.Info().Str("call_id", callID).Bool("enabled", enabled).Msg("video enable deferred until accept is sent")
+		return nil
+	}
 	m.localVideo = enabled
 	m.videoGate = false
 	to, creator, sender := m.from, m.creator, m.videoTx
@@ -388,7 +407,21 @@ func (e *engine) setVideoOrientation(callID string, orientation int) error {
 	}
 	e.mu.Lock()
 	m := e.calls[callID]
-	if m == nil || m.call == nil || m.call.State() == CallPhaseEnded || !m.localVideo {
+	if m == nil || m.call == nil || m.call.State() == CallPhaseEnded {
+		e.mu.Unlock()
+		return errors.New("meowcaller: call has no active video media")
+	}
+	// Same deferral as the camera toggle: while the accept (and any parked
+	// enable) hasn't gone out, hold the orientation and let sendAccept apply
+	// it in order.
+	if !m.group && m.direction == CallDirectionIncoming && !m.acceptSent {
+		v := orientation
+		m.pendingVideoOrientation = &v
+		e.mu.Unlock()
+		e.c.log.Info().Str("call_id", callID).Int("orientation", orientation).Msg("video orientation deferred until accept is sent")
+		return nil
+	}
+	if !m.localVideo {
 		e.mu.Unlock()
 		return errors.New("meowcaller: call has no active video media")
 	}
@@ -715,6 +748,29 @@ func (e *engine) sendAccept(callID string, to, creator types.JID) {
 		return
 	}
 	e.c.log.Info().Str("call_id", callID).Bool("video", isVideo).Msg("accepted (after mute_v2)")
+
+	// The accept is on the wire; release any camera toggle that arrived early.
+	e.mu.Lock()
+	var pending *bool
+	var pendingOrientation *int
+	if current := e.calls[callID]; current == m {
+		current.acceptSent = true
+		pending = current.pendingVideoEnable
+		current.pendingVideoEnable = nil
+		pendingOrientation = current.pendingVideoOrientation
+		current.pendingVideoOrientation = nil
+	}
+	e.mu.Unlock()
+	if pending != nil {
+		if err := e.setVideoEnabled(callID, *pending); err != nil {
+			e.c.log.Warn().Err(err).Str("call_id", callID).Msg("deferred video enable failed")
+		}
+	}
+	if pendingOrientation != nil {
+		if err := e.setVideoOrientation(callID, *pendingOrientation); err != nil {
+			e.c.log.Warn().Err(err).Str("call_id", callID).Msg("deferred video orientation failed")
+		}
+	}
 }
 
 // reject declines an inbound call.
