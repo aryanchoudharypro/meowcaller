@@ -7,6 +7,18 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### engine/signaling — `implemented`
+
+- Offers older than the caller's 90s ring timeout are ignored. On reconnect
+  the server replays call stanzas queued while the client was offline —
+  including offers minutes old whose terminate sits right behind them in the
+  same backlog. Treating such an offer as live rings the consumer and races
+  the queued terminate (`OnIncomingCall` fires, then the call vanishes before
+  `Answer` lands). The age comes from the wrapper's server-computed `e`
+  attribute (0 on live delivery), so local clock skew cannot misfire the
+  gate. Live-validated against a 16-stanza offline backlog.
+
+
 ### media/video-send — `implemented`
 
 - `SetVideoOrientation` now also stamps the CVO rotation into the low two

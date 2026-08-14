@@ -566,6 +566,19 @@ func (e *engine) onOffer(ev *events.CallOffer) {
 		return
 	}
 
+	// Offline replay: on reconnect the server re-delivers call stanzas queued
+	// while we were away, including offers minutes old whose terminate is right
+	// behind them in the same backlog. The wrapper's `e` attribute is the
+	// server-computed elapsed seconds (0 on live delivery), so it is immune to
+	// local clock skew. Anything older than the caller's own 90s ring timeout
+	// cannot be answered — ringing it just races the queued terminate.
+	if raw := oag.OptionalString("e"); raw != "" {
+		if elapsed, err := strconv.Atoi(raw); err == nil && elapsed > 90 {
+			e.c.log.Warn().Str("call_id", ev.CallID).Int("elapsed_s", elapsed).Msg("ignoring stale offer replayed from the offline queue")
+			return
+		}
+	}
+
 	callKey, err := decryptInboundCallKey(context.Background(), e.c.wa, ev)
 	if err != nil {
 		e.c.log.Warn().Err(err).Str("call_id", ev.CallID).Msg("decrypt callKey failed")
