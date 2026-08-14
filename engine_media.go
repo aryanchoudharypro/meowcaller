@@ -1364,6 +1364,7 @@ type videoSender struct {
 	pipe             *MediaPipeline
 	stream           *rtp.VideoRtpStream
 	ch               relayMediaSender
+	orientation      int
 	ssrc             uint32
 	callID           string
 	frame            uint64
@@ -1486,6 +1487,14 @@ func (s *mediaSrtcpSender) pictureLossIndication(mediaSSRC uint32) ([]byte, erro
 	return packet, err
 }
 
+// setOrientation sets the CVO rotation stamped on every outbound video packet,
+// in clockwise quarter turns.
+func (vs *videoSender) setOrientation(orientation int) {
+	vs.mu.Lock()
+	vs.orientation = orientation & 0x03
+	vs.mu.Unlock()
+}
+
 func (vs *videoSender) protectAccessUnit(au []byte, duration time.Duration) [][]byte {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
@@ -1529,6 +1538,11 @@ func (vs *videoSender) protectAccessUnitLocked(au []byte, duration time.Duration
 	if idr {
 		mediaFrameInfo = rtp.VideoMediaFrameInfoIDR
 	}
+	// The low two bits are the CVO rotation (see VideoRtpExtension
+	// DisplayOrientation). Receivers render by these in-band bits, not the
+	// stanza-level orientation, so a sender that leaves them zero shows its
+	// video sideways on any peer whose frames need rotation.
+	mediaFrameInfo |= uint8(vs.orientation & 0x03)
 	packets := make([][]byte, 0, len(payloads))
 	for i, payload := range payloads {
 		header := vs.stream.NextPacket(i == len(payloads)-1, mediaFrameInfo)

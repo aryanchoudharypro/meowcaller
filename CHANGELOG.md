@@ -7,6 +7,16 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### media/video-send — `implemented`
+
+- `SetVideoOrientation` now also stamps the CVO rotation into the low two
+  bits of the outbound video RTP extension's MediaFrameInfo (TS 26.114
+  clockwise quarter turns). Receivers render by these in-band bits, not the
+  stanza-level orientation, so a sender that left them zero showed its video
+  rotated on any peer whose frames need rotation. Live-validated: relayed
+  portrait video renders upright on the peer.
+
+
 ### engine/video-state — `implemented`
 
 - On incoming 1:1 calls, `SetVideoEnabled` and `SetVideoOrientation` are

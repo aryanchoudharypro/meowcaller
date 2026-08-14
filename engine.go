@@ -425,8 +425,13 @@ func (e *engine) setVideoOrientation(callID string, orientation int) error {
 		e.mu.Unlock()
 		return errors.New("meowcaller: call has no active video media")
 	}
-	to, creator := m.from, m.creator
+	to, creator, sender := m.from, m.creator, m.videoTx
 	e.mu.Unlock()
+	// The stanza announces the rotation, but receivers render by the in-band
+	// CVO bits on each packet — both must carry the same value.
+	if sender != nil {
+		sender.setOrientation(orientation)
+	}
 	node := signaling.BuildVideoStateWithParams(signaling.VideoStateParams{
 		CallID: callID, To: to, CallCreator: creator, WrapperID: e.nextCallNodeID(),
 		State: signaling.VideoStateEnabled, DeviceOrientation: &orientation,
