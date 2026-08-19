@@ -579,9 +579,15 @@ func (e *engine) onOffer(ev *events.CallOffer) {
 		}
 	}
 
-	callKey, err := decryptInboundCallKey(context.Background(), e.c.wa, ev)
-	if err != nil {
-		e.c.log.Warn().Err(err).Str("call_id", ev.CallID).Msg("decrypt callKey failed")
+	// whatsmeow's own call.go already decrypted this offer's callKey before
+	// dispatching CallOffer (it needs it to send the eager preaccept). Reuse
+	// that instead of decrypting the same Signal-encrypted ciphertext again:
+	// session decryption advances the ratchet and isn't repeatable, so a
+	// second decrypt of identical ciphertext fails with "old counter" and
+	// silently drops every incoming call.
+	callKey := ev.CallKey
+	if len(callKey) == 0 {
+		e.c.log.Warn().Str("call_id", ev.CallID).Msg("offer carried no callKey")
 		return
 	}
 	e.c.log.Info().Int("key_bytes", len(callKey)).Str("call_id", ev.CallID).Msg("decrypted inbound callKey")
@@ -1546,38 +1552,6 @@ func encryptCallKeyForDevice(ctx context.Context, cli *whatsmeow.Client, dev typ
 		return nil, "", false, errors.New("enc node has no ciphertext")
 	}
 	return ct, enc.AttrGetter().String("type"), needIdentity, nil
-}
-
-// decryptInboundCallKey pulls the <enc> from the offer node and decrypts the
-// Message{Call{CallKey}} under our Signal session.
-func decryptInboundCallKey(ctx context.Context, cli *whatsmeow.Client, ev *events.CallOffer) ([]byte, error) {
-	if ev.Data == nil {
-		return nil, errors.New("offer has no data node")
-	}
-	var enc *waBinary.Node
-	for i := range ev.Data.GetChildren() {
-		if c := &ev.Data.GetChildren()[i]; c.Tag == "enc" {
-			enc = c
-			break
-		}
-	}
-	if enc == nil {
-		return nil, errors.New("offer has no enc node")
-	}
-	isPreKey := enc.AttrGetter().String("type") == "pkmsg"
-	pt, _, err := cli.DangerousInternals().DecryptDM(ctx, enc, ev.From, isPreKey, ev.Timestamp)
-	if err != nil {
-		return nil, err
-	}
-	var msg waE2E.Message
-	if err := proto.Unmarshal(pt, &msg); err != nil {
-		return nil, err
-	}
-	key := msg.GetCall().GetCallKey()
-	if len(key) == 0 {
-		return nil, errors.New("offer message carried no callKey")
-	}
-	return key, nil
 }
 
 // newCallID returns a call id in WhatsApp's shape: 16 random bytes as uppercase hex.
