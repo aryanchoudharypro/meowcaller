@@ -15,7 +15,8 @@ import (
 )
 
 type recordingParticipantDecoder struct {
-	payloads [][]byte
+	payloads     [][]byte
+	redundancies []int
 }
 
 type blockingParticipantDecoder struct {
@@ -30,6 +31,12 @@ func (d *recordingParticipantDecoder) Decode(payload []byte) []float32 {
 	}
 	return []float32{float32(payload[0])}
 }
+
+func (d *recordingParticipantDecoder) SetRedundancy(n int) {
+	d.redundancies = append(d.redundancies, n)
+}
+
+func (d *blockingParticipantDecoder) SetRedundancy(int) {}
 
 func (d *blockingParticipantDecoder) Decode(payload []byte) []float32 {
 	close(d.entered)
@@ -982,6 +989,60 @@ func TestParticipantReceiveRegistryPreservesFallbackWhenOnlySelfHasPID(t *testin
 	}
 	if audio.ParticipantID != peerID || audio.HasPID {
 		t.Fatalf("fallback metadata = %+v, want participant %s without PID", audio, peerID)
+	}
+}
+
+// TestParticipantReceiveRegistryTracksRedundancyPerPacketPayloadType guards the
+// DecodeAudio wiring added for RtpPayloadTypeMlowRed: the decoder's redundancy flag
+// must track each packet's own RTP payload type (WhatsApp switches a stream to PT
+// 121 dynamically under loss), not get negotiated once for the whole call.
+func TestParticipantReceiveRegistryTracksRedundancyPerPacketPayloadType(t *testing.T) {
+	callKey := iota32()
+	self := mediaTestJID("111111111111111", 14)
+	peer := mediaTestJID("222222222222222", 0)
+	var decoder *recordingParticipantDecoder
+	registry, err := newParticipantReceiveRegistry("CID", callKey, self.String(), peer.String(), func() participantAudioDecoder {
+		decoder = &recordingParticipantDecoder{}
+		return decoder
+	})
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	peerID := rtp.FormatE2ESrtpParticipantID(peer.String())
+	peerSSRC, err := rtp.DeriveWasmParticipantSsrc("CID", peerID, 0)
+	if err != nil {
+		t.Fatalf("derive peer SSRC: %v", err)
+	}
+	sender, err := NewMediaPipeline(callKey, peer.String(), self.String(), peerSSRC, FrameSamples)
+	if err != nil {
+		t.Fatalf("new peer sender: %v", err)
+	}
+
+	bare, err := sender.ProtectRTP(&rtp.RtpHeader{
+		PayloadType: rtp.RtpPayloadTypeOpus, SequenceNumber: 1, Timestamp: 3000, Ssrc: peerSSRC,
+	}, []byte{0x01})
+	if err != nil {
+		t.Fatalf("protect bare frame: %v", err)
+	}
+	if _, ok := registry.DecodeAudio(bare); !ok {
+		t.Fatal("bare frame did not authenticate")
+	}
+
+	red, err := sender.ProtectRTP(&rtp.RtpHeader{
+		PayloadType: rtp.RtpPayloadTypeMlowRed, SequenceNumber: 2, Timestamp: 3960, Ssrc: peerSSRC,
+	}, []byte{0x02})
+	if err != nil {
+		t.Fatalf("protect RED frame: %v", err)
+	}
+	if _, ok := registry.DecodeAudio(red); !ok {
+		t.Fatal("RED frame did not authenticate")
+	}
+
+	if decoder == nil {
+		t.Fatal("decoder factory never invoked")
+	}
+	if want := []int{0, 1}; !slices.Equal(decoder.redundancies, want) {
+		t.Fatalf("decoder.SetRedundancy calls = %v, want %v (bare PT-120 then RED PT-121)", decoder.redundancies, want)
 	}
 }
 

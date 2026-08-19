@@ -7,6 +7,28 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### media/group-receive — wire per-packet RED redundancy into `DecodeAudio` — `implemented`
+
+- `MlowDecoder.SetRedundancy` was implemented and KAT-verified (`mlow/red`, module #14)
+  but never called from anywhere outside `mlow/` — `d.redundancy` stayed `0` for the life
+  of every decoder, so `Decode`'s `redundancy > 0` branch was dead code. Any packet
+  arriving on PT 121 (WhatsApp's RED/SplitRed variant, sent dynamically once a stream is
+  under loss) was decoded as if it were a bare PT-120 frame: the RED header bytes got
+  range-decoded as if they were a TOC + body. `DecodeAudio` now calls
+  `receiver.decoder.SetRedundancy(1)` when `authenticatedHeader.PayloadType ==
+  rtp.RtpPayloadTypeMlowRed` (else `0`) immediately before each `Decode` call, matching
+  the reference's `on_rtp`/`on_group_rtp` (`decoder.set_redundancy(payload_type ==
+  RTP_PAYLOAD_TYPE_MLOW_RED)` before every decode — reference
+  `e0ea6dde8ddc22820a77c2f1fa1a6531662fcff3`, `engine.rs:2154`/`:2315`). Per packet, not
+  negotiated once for the call, since WhatsApp switches PT mid-stream. New
+  `TestParticipantReceiveRegistryTracksRedundancyPerPacketPayloadType` sends one PT-120
+  and one PT-121 packet through a real `DecodeAudio` call and asserts the exact
+  `SetRedundancy` sequence (`[0, 1]`); confirmed it fails (`[1, 0]`) with the condition
+  inverted. This does not yet use the RED redundant blocks to recover audio for a lost
+  primary packet — the reference doesn't do that either, it only uses RED to correctly
+  strip the envelope and decode the current/main frame — that would be a separate,
+  larger feature on top.
+
 ### engine/signaling — `implemented`
 
 - Offers older than the caller's 90s ring timeout are ignored. On reconnect

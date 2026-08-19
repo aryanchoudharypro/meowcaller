@@ -15,6 +15,7 @@ import (
 
 type participantAudioDecoder interface {
 	Decode([]byte) []float32
+	SetRedundancy(int)
 }
 
 type decodedParticipantAudio struct {
@@ -869,6 +870,15 @@ func (r *participantReceiveRegistry) DecodeAudio(packet []byte) (decodedParticip
 			Msg("participant audio failed authentication")
 		return decodedParticipantAudio{}, false
 	}
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/e0ea6dde8ddc22820a77c2f1fa1a6531662fcff3/wacore/src/voip/engine.rs#L2154
+	// WhatsApp switches a stream to PT 121 (RED) dynamically under loss; the redundancy
+	// flag must track that per packet, not be negotiated once for the call, or a bare
+	// frame following a RED one (or vice versa) misparses.
+	redundancy := 0
+	if authenticatedHeader.PayloadType == rtp.RtpPayloadTypeMlowRed {
+		redundancy = 1
+	}
+	receiver.decoder.SetRedundancy(redundancy)
 	pcm := receiver.decoder.Decode(payload)
 	return decodedParticipantAudio{
 		ParticipantID: receiver.participantID,

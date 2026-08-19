@@ -10,6 +10,8 @@ func (d *constantFrameParticipantDecoder) Decode([]byte) []float32 {
 	return constantPCM(FrameSamples, d.value)
 }
 
+func (d *constantFrameParticipantDecoder) SetRedundancy(int) {}
+
 func constantPCM(samples int, value float32) []float32 {
 	pcm := make([]float32, samples)
 	for i := range pcm {
