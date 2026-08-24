@@ -37,6 +37,10 @@ type engine struct {
 	sendCallNode    func(context.Context, waBinary.Node) error
 	requestCallNode func(context.Context, waBinary.Node, string) (*waBinary.Node, error)
 	rawCallHookErr  error
+
+	// acceptFallbackDelay overrides deferredAcceptFallbackDelay; zero-value engines (as
+	// constructed directly by tests, bypassing newEngine) fall back to the package default.
+	acceptFallbackDelay time.Duration
 }
 
 // engineCall is the engine's per-call state: the public Call handle plus the inputs
@@ -740,11 +744,47 @@ func (e *engine) answer(c *Call) error {
 	}
 	e.mu.Lock()
 	m.acceptPending = true
+	to, creator := m.from, m.creator
 	e.mu.Unlock()
 
 	c.setPhase(CallPhaseConnecting)
 	e.maybeStartMedia(c.id)
+	go e.scheduleDeferredAcceptFallback(c.id, to, creator)
 	return nil
+}
+
+// deferredAcceptFallbackDelay bounds how long answer() waits for the caller's <mute_v2>
+// before force-sending the deferred <accept> itself. Observed in the field: calls placed
+// from WhatsApp Web never send a <mute_v2> during setup (Android callers reliably do), so
+// sendAccept's only trigger never fires. Local media comes up regardless via
+// maybeStartMedia, so without this the app shows a connected call indefinitely while the
+// peer's client is still ringing, unanswered.
+const deferredAcceptFallbackDelay = 3 * time.Second
+
+// scheduleDeferredAcceptFallback force-sends the callee <accept> if acceptPending is still
+// set once deferredAcceptFallbackDelay has passed since Answer(). sendAccept is idempotent
+// (guarded by acceptPending, cleared by whichever caller wins the race with the real
+// mute_v2) and already handles the call having ended in the meantime (m == nil), so this
+// is safe to fire unconditionally.
+func (e *engine) scheduleDeferredAcceptFallback(callID string, to, creator types.JID) {
+	delay := e.acceptFallbackDelay
+	if delay <= 0 {
+		delay = deferredAcceptFallbackDelay
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	<-timer.C
+
+	e.mu.Lock()
+	m := e.calls[callID]
+	pending := m != nil && m.acceptPending
+	e.mu.Unlock()
+	if !pending {
+		return
+	}
+
+	e.c.log.Warn().Str("call_id", callID).Msg("mute_v2 never arrived; force-sending deferred accept")
+	e.sendAccept(callID, to, creator)
 }
 
 // sendAccept sends the deferred callee <accept> (once), in the WA-Web format (metadata +
@@ -767,7 +807,7 @@ func (e *engine) sendAccept(callID string, to, creator types.JID) {
 		Video:      isVideo,
 	})
 	accept.Attrs["id"] = e.c.wa.DangerousInternals().GenerateRequestID()
-	if err := e.c.wa.DangerousInternals().SendNode(context.Background(), accept); err != nil {
+	if err := e.transmitCallNode(context.Background(), accept); err != nil {
 		e.c.log.Error().Err(err).Str("call_id", callID).Msg("send accept failed")
 		return
 	}
