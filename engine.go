@@ -53,6 +53,16 @@ type engineCall struct {
 	creator types.JID // call-creator JID (for accept/relaylatency)
 	from    types.JID // the <call> "from" — where stanzas are addressed
 
+	// offeredDevices are the callee's devices the offer was fanned out to, and peerBareJID
+	// is their address without a device suffix (outgoing calls only). Once one device
+	// accepts, onAccept terminates the rest with reason="accepted_elsewhere" so their local
+	// ring UI doesn't linger — mirroring what a real WhatsApp client's caller side does; a
+	// caller that skips this leaves every other device the callee owns ringing until it
+	// separately times out or is dismissed by hand.
+	offeredDevices       []types.JID
+	peerBareJID          types.JID
+	notifiedOtherDevices bool
+
 	direction         CallDirection
 	codec             AudioCodec   // audio codec for this call, selected from voip_settings (MLow default)
 	localVideo        bool         // this client is sending, or has requested to send, video
@@ -519,6 +529,8 @@ func (e *engine) placeCall(ctx context.Context, target string, opts CallOptions)
 	m.creator = self
 	m.from = peerLID
 	m.direction = CallDirectionOutgoing
+	m.offeredDevices = append([]types.JID(nil), devices...)
+	m.peerBareJID = peerLID
 	m.localVideo = opts.Video
 	m.remoteVideo = opts.Video
 	m.inviteSelfDevice = groupCallDevice{
@@ -993,6 +1005,8 @@ func (e *engine) onAccept(ev *events.CallAccept) {
 	}
 	e.mu.Lock()
 	var rekeyPeer func(string) error
+	var terminateOthers []types.JID
+	var terminateTo, terminateCreator types.JID
 	answeringPeer := ev.From.String()
 	if current := e.calls[ev.CallID]; current != nil {
 		if device, ok := inviteDeviceCapability(ev.From, ev.Data); ok {
@@ -1007,6 +1021,17 @@ func (e *engine) onAccept(ev *events.CallAccept) {
 			current.peerLID = answeringPeer
 			rekeyPeer = current.rekeyPeer
 		}
+		if !current.notifiedOtherDevices && !ev.From.IsEmpty() && len(current.offeredDevices) > 0 {
+			for _, dev := range current.offeredDevices {
+				if dev != ev.From {
+					terminateOthers = append(terminateOthers, dev)
+				}
+			}
+			if len(terminateOthers) > 0 {
+				current.notifiedOtherDevices = true
+				terminateTo, terminateCreator = current.peerBareJID, current.creator
+			}
+		}
 	}
 	e.mu.Unlock()
 	if rekeyPeer != nil {
@@ -1014,6 +1039,22 @@ func (e *engine) onAccept(ev *events.CallAccept) {
 			e.c.log.Warn().Err(err).Str("call_id", ev.CallID).Str("peer_lid", answeringPeer).Msg("failed to rekey media to answering device")
 		} else {
 			e.c.log.Info().Str("call_id", ev.CallID).Str("peer_lid", answeringPeer).Msg("rekeyed media to answering device")
+		}
+	}
+	if len(terminateOthers) > 0 {
+		// Real WhatsApp clients broadcast this the moment one device accepts, so the
+		// callee's other devices (their phone, most visibly) stop ringing promptly instead
+		// of waiting out their own ring timeout or requiring a manual dismissal.
+		reason := "accepted_elsewhere"
+		term := signaling.BuildTerminate(&signaling.TerminateParams{
+			CallID: ev.CallID, To: terminateTo, CallCreator: terminateCreator,
+			Reason: &reason, TargetDevices: terminateOthers,
+		})
+		term.Attrs["id"] = e.c.wa.DangerousInternals().GenerateRequestID()
+		if err := e.transmitCallNode(context.Background(), term); err != nil {
+			e.c.log.Warn().Err(err).Str("call_id", ev.CallID).Msg("notify other devices of accepted_elsewhere failed")
+		} else {
+			e.c.log.Info().Str("call_id", ev.CallID).Int("device_count", len(terminateOthers)).Msg("notified other devices call was accepted elsewhere")
 		}
 	}
 	if m.call != nil && m.call.State() < CallPhaseConnecting {
