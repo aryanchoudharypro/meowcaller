@@ -4,7 +4,6 @@ import (
 	"context"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/rs/zerolog"
 	"go.mau.fi/whatsmeow"
@@ -32,14 +31,16 @@ func testEngineWithIncomingCall(callID string) (*engine, *Call) {
 	return eng, call
 }
 
-// TestDeferredAcceptFallbackFiresWhenMuteV2NeverArrives covers the field bug where a call
-// placed from WhatsApp Web never sends the <mute_v2> that sendAccept is normally gated on
-// (Android callers do): without a fallback, the callee's <accept> is stuck forever even
-// though local media (and the app's call UI) already came up via maybeStartMedia in
-// answer(), leaving the caller ringing unanswered.
-func TestDeferredAcceptFallbackFiresWhenMuteV2NeverArrives(t *testing.T) {
+// TestAnswerSendsOwnMuteV2ThenAccept covers the field bug where a call placed from
+// WhatsApp Web never sent the caller's <mute_v2> that accept used to be gated on: without
+// it, the callee's <accept> was stuck forever even though local media (and the app's call
+// UI) already came up via maybeStartMedia in answer(), leaving the caller ringing
+// unanswered. Reference capture of a genuine WhatsApp Web client (diag/captures) showed
+// it sends its own <mute_v2> immediately followed by <accept> on answer, unprompted by
+// anything from the peer — mute_v2 was never a signal to wait for. answer() now mirrors
+// that: it sends both immediately and unconditionally.
+func TestAnswerSendsOwnMuteV2ThenAccept(t *testing.T) {
 	eng, call := testEngineWithIncomingCall("CID")
-	eng.acceptFallbackDelay = time.Millisecond
 
 	var mu sync.Mutex
 	var sent []waBinary.Node
@@ -53,53 +54,44 @@ func TestDeferredAcceptFallbackFiresWhenMuteV2NeverArrives(t *testing.T) {
 	if err := call.Answer(); err != nil {
 		t.Fatalf("Answer: %v", err)
 	}
-	if !eng.calls["CID"].acceptPending {
-		t.Fatal("acceptPending should be set immediately by Answer")
-	}
-
-	deadline := time.After(2 * time.Second)
-	for {
-		mu.Lock()
-		n := len(sent)
-		mu.Unlock()
-		if n > 0 {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatal("fallback never sent the deferred accept")
-		case <-time.After(time.Millisecond):
-		}
-	}
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(sent) != 1 {
-		t.Fatalf("sent %d call nodes, want 1", len(sent))
+	if len(sent) != 2 {
+		t.Fatalf("sent %d call nodes, want 2 (mute_v2, accept)", len(sent))
 	}
-	children := sent[0].GetChildren()
-	if len(children) != 1 || children[0].Tag != "accept" {
-		t.Fatalf("accept envelope = %#v", sent[0])
+
+	muteChildren := sent[0].GetChildren()
+	if len(muteChildren) != 1 || muteChildren[0].Tag != "mute_v2" {
+		t.Fatalf("first node = %#v, want mute_v2 envelope", sent[0])
 	}
-	if attrs := children[0].AttrGetter(); attrs.String("call-id") != "CID" {
+	if attrs := muteChildren[0].AttrGetter(); attrs.String("call-id") != "CID" || attrs.String("mute-state") != "0" {
+		t.Fatalf("mute_v2 attrs = %#v, want call-id=CID mute-state=0", muteChildren[0].Attrs)
+	}
+
+	acceptChildren := sent[1].GetChildren()
+	if len(acceptChildren) != 1 || acceptChildren[0].Tag != "accept" {
+		t.Fatalf("second node = %#v, want accept envelope", sent[1])
+	}
+	if attrs := acceptChildren[0].AttrGetter(); attrs.String("call-id") != "CID" {
 		t.Fatalf("accept call-id = %q, want CID", attrs.String("call-id"))
 	}
 
 	m := eng.calls["CID"]
 	if m.acceptPending {
-		t.Fatal("acceptPending should be cleared once the fallback accept goes out")
+		t.Fatal("acceptPending should be cleared once accept goes out")
 	}
 	if !m.acceptSent {
-		t.Fatal("acceptSent should be true once the fallback accept goes out")
+		t.Fatal("acceptSent should be true once accept goes out")
 	}
 }
 
-// TestDeferredAcceptFallbackSkippedWhenMuteV2ArrivesFirst asserts the fallback is a no-op
-// once the real <mute_v2> has already sent the accept — the common case (Android callers)
-// must not end up sending <accept> twice.
-func TestDeferredAcceptFallbackSkippedWhenMuteV2ArrivesFirst(t *testing.T) {
+// TestPeerMuteV2DoesNotDoubleSendAccept asserts that a mute_v2 arriving from the peer
+// after Answer() (a normal in-call mute-state change, or a caller that also sends one)
+// is purely observational and never re-triggers sendAccept — accept is already on the
+// wire by the time Answer() returns.
+func TestPeerMuteV2DoesNotDoubleSendAccept(t *testing.T) {
 	eng, call := testEngineWithIncomingCall("CID")
-	eng.acceptFallbackDelay = 50 * time.Millisecond
 
 	var mu sync.Mutex
 	var sent []waBinary.Node
@@ -130,11 +122,9 @@ func TestDeferredAcceptFallbackSkippedWhenMuteV2ArrivesFirst(t *testing.T) {
 	}
 	eng.onCallRaw(muteNode)
 
-	time.Sleep(150 * time.Millisecond)
-
 	mu.Lock()
 	defer mu.Unlock()
-	if len(sent) != 1 {
-		t.Fatalf("sent %d call nodes, want exactly 1 (no duplicate accept from the fallback)", len(sent))
+	if len(sent) != 2 {
+		t.Fatalf("sent %d call nodes, want exactly 2 (own mute_v2 + accept from Answer, no extra accept from the peer's mute_v2)", len(sent))
 	}
 }

@@ -37,10 +37,6 @@ type engine struct {
 	sendCallNode    func(context.Context, waBinary.Node) error
 	requestCallNode func(context.Context, waBinary.Node, string) (*waBinary.Node, error)
 	rawCallHookErr  error
-
-	// acceptFallbackDelay overrides deferredAcceptFallbackDelay; zero-value engines (as
-	// constructed directly by tests, bypassing newEngine) fall back to the package default.
-	acceptFallbackDelay time.Duration
 }
 
 // engineCall is the engine's per-call state: the public Call handle plus the inputs
@@ -78,7 +74,7 @@ type engineCall struct {
 	inviteSelfDevice  groupCallDevice
 	invitePeerDevice  groupCallDevice
 
-	// The callee <accept> is deferred until the caller's <mute_v2> arrives.
+	// acceptPending guards sendAccept against sending <accept> twice for the same call.
 	acceptPending bool
 	// acceptSent flips once the <accept> is actually on the wire. Video-state
 	// stanzas sent before it are a sequence no real client produces, and phones
@@ -720,10 +716,16 @@ func (e *engine) sendPreaccept(callID string, to, creator types.JID, video bool)
 	return nil
 }
 
-// answer accepts an inbound call: it marks the call to accept (the actual <accept> is
-// deferred until the caller's <mute_v2>, which onCallRaw fires) and brings media up. The
-// <preaccept> was already sent eagerly when the offer arrived, so Answer only commits to
-// the call. Media comes up once callKey+relay are both known.
+// answer accepts an inbound call. The <preaccept> was already sent eagerly when the offer
+// arrived, so Answer commits to the call, brings media up, and sends the callee's own
+// <mute_v2> (announcing its initial unmuted state) immediately followed by <accept> —
+// mirroring what a real WhatsApp Web client does on answer. mute_v2 is not a signal the
+// callee waits to receive from the caller: reference capture of a genuine WA Web session
+// answering a call shows it sending mute_v2 and accept back-to-back, unprompted, with no
+// mute_v2 from the peer beforehand (see diag/captures). An earlier version of this code
+// waited for the caller's mute_v2 to trigger accept, which WhatsApp Web callers never
+// send, permanently stranding the call; a 3s fallback timer patched the symptom without
+// fixing the wrong premise.
 func (e *engine) answer(c *Call) error {
 	m := e.lookup(c.id)
 	if m == nil {
@@ -749,45 +751,17 @@ func (e *engine) answer(c *Call) error {
 
 	c.setPhase(CallPhaseConnecting)
 	e.maybeStartMedia(c.id)
-	go e.scheduleDeferredAcceptFallback(c.id, to, creator)
+
+	mute := signaling.BuildMuteV2(c.id, to, creator, "0")
+	mute.Attrs["id"] = e.c.wa.DangerousInternals().GenerateRequestID()
+	if err := e.transmitCallNode(context.Background(), mute); err != nil {
+		e.c.log.Warn().Err(err).Str("call_id", c.id).Msg("send own mute_v2 failed")
+	}
+	e.sendAccept(c.id, to, creator)
 	return nil
 }
 
-// deferredAcceptFallbackDelay bounds how long answer() waits for the caller's <mute_v2>
-// before force-sending the deferred <accept> itself. Observed in the field: calls placed
-// from WhatsApp Web never send a <mute_v2> during setup (Android callers reliably do), so
-// sendAccept's only trigger never fires. Local media comes up regardless via
-// maybeStartMedia, so without this the app shows a connected call indefinitely while the
-// peer's client is still ringing, unanswered.
-const deferredAcceptFallbackDelay = 3 * time.Second
-
-// scheduleDeferredAcceptFallback force-sends the callee <accept> if acceptPending is still
-// set once deferredAcceptFallbackDelay has passed since Answer(). sendAccept is idempotent
-// (guarded by acceptPending, cleared by whichever caller wins the race with the real
-// mute_v2) and already handles the call having ended in the meantime (m == nil), so this
-// is safe to fire unconditionally.
-func (e *engine) scheduleDeferredAcceptFallback(callID string, to, creator types.JID) {
-	delay := e.acceptFallbackDelay
-	if delay <= 0 {
-		delay = deferredAcceptFallbackDelay
-	}
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	<-timer.C
-
-	e.mu.Lock()
-	m := e.calls[callID]
-	pending := m != nil && m.acceptPending
-	e.mu.Unlock()
-	if !pending {
-		return
-	}
-
-	e.c.log.Warn().Str("call_id", callID).Msg("mute_v2 never arrived; force-sending deferred accept")
-	e.sendAccept(callID, to, creator)
-}
-
-// sendAccept sends the deferred callee <accept> (once), in the WA-Web format (metadata +
+// sendAccept sends the callee <accept> (once), in the WA-Web format (metadata +
 // single rate — the peer keeps the call alive with this; capability+both-rates fails).
 func (e *engine) sendAccept(callID string, to, creator types.JID) {
 	e.mu.Lock()
@@ -811,7 +785,7 @@ func (e *engine) sendAccept(callID string, to, creator types.JID) {
 		e.c.log.Error().Err(err).Str("call_id", callID).Msg("send accept failed")
 		return
 	}
-	e.c.log.Info().Str("call_id", callID).Bool("video", isVideo).Msg("accepted (after mute_v2)")
+	e.c.log.Info().Str("call_id", callID).Bool("video", isVideo).Msg("accepted")
 
 	// The accept is on the wire; release any camera toggle that arrived early.
 	e.mu.Lock()
@@ -1185,9 +1159,9 @@ func (e *engine) onCallAck(ack *waBinary.Node) {
 	e.onRelay(callID, ack)
 }
 
-// onCallRaw sees every raw <call> node before whatsmeow processes it. It fires the
-// deferred <accept> when the caller's first <mute_v2> arrives (whatsmeow surfaces no
-// mute event, so this is the only place we see it).
+// onCallRaw sees every raw <call> node before whatsmeow processes it. It surfaces the
+// peer's mute-state changes (whatsmeow raises no event for mute_v2, so this is the only
+// place we see it).
 // onCallRaw inspects a raw <call> node before whatsmeow processes it. It returns true when
 // it has fully handled the node (including sending the appropriate ack), so the caller skips
 // whatsmeow's generic typeless ack.
@@ -1221,32 +1195,19 @@ func (e *engine) onCallRaw(callNode *waBinary.Node) bool {
 		}
 		muteState := mv.String("mute-state")
 		muted := muteState == "1"
-		// The deferred <accept> fires on the FIRST mute_v2 only — it arrives right after
-		// the relaylatency/transport. Later mute_v2 nodes are in-call mute-state changes
-		// (e.g. 1→0) and must not re-run the accept path on an already-accepted call.
 		e.mu.Lock()
 		m := e.calls[callID]
-		pending := m != nil && m.acceptPending
 		e.mu.Unlock()
 		if m != nil && m.call != nil {
 			if fn := m.call.onMuteStateFn(); fn != nil {
 				fn(muted)
 			}
 		}
-		if !pending {
-			e.c.log.Debug().
-				Str("call_id", callID).
-				Str("mute_state", muteState).
-				Bool("muted", muted).
-				Msg("mute_v2 observed; call not awaiting accept")
-			return false
-		}
-		e.c.log.Info().
+		e.c.log.Debug().
 			Str("call_id", callID).
 			Str("mute_state", muteState).
 			Bool("muted", muted).
-			Msg("first mute_v2 received; sending deferred accept")
-		e.sendAccept(callID, callNode.AttrGetter().JID("from"), mv.JID("call-creator"))
+			Msg("mute_v2 observed")
 		return false
 	case "video":
 		// Acknowledge the <video> stanza with type="video" — the mid-call video-upgrade
