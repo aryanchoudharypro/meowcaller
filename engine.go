@@ -71,10 +71,17 @@ type engineCall struct {
 	// otherwise recompute codec from the local preference alone and silently undo a
 	// downgrade the peer already forced.
 	peerMlowCapability signaling.CapabilityBit
-	localVideo         bool         // this client is sending, or has requested to send, video
-	remoteVideo        bool         // the peer is sending video to this client
-	videoGate          bool         // outbound upgrade is waiting for peer acceptance
-	peerVideoUpgrade   bool         // the peer's inbound upgrade is waiting for local acceptance
+	localVideo         bool // this client is sending, or has requested to send, video
+	remoteVideo        bool // the peer is sending video to this client
+	videoGate          bool // outbound upgrade is waiting for peer acceptance
+	peerVideoUpgrade   bool // the peer's inbound upgrade is waiting for local acceptance
+	// peerVideoUpgradeAt is when that request arrived. Camera preparation waits
+	// for the first decodable IDR, outside the signaling path, so it can outlast
+	// the peer's own five-second timeout: by the time the accept is ready the
+	// peer has given up, and its cancel may never arrive or may arrive late.
+	// Completing such an accept turns the camera on for a call nobody is waiting
+	// on and holds the device against the next attempt.
+	peerVideoUpgradeAt time.Time
 	videoTx            *videoSender // video send pipeline, live while media runs
 	appDataTx          *appDataSender
 	rekeyPeer          func(string) error
@@ -229,6 +236,11 @@ func (e *engine) lookup(callID string) *engineCall {
 	return e.calls[callID]
 }
 
+// peerVideoUpgradeTimeout is how long the peer waits for us to accept its
+// audio-to-video upgrade before giving up on it. Mirrors the native client,
+// which guards acceptance on the peer still being in its requesting state.
+const peerVideoUpgradeTimeout = 5 * time.Second
+
 func (e *engine) callIsVideo(callID string) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -298,6 +310,13 @@ func (e *engine) transitionVideo(callID string, transition int) error {
 			e.mu.Unlock()
 			return errors.New("meowcaller: no pending peer video upgrade")
 		}
+		if age := time.Since(m.peerVideoUpgradeAt); age > peerVideoUpgradeTimeout {
+			m.peerVideoUpgrade = false
+			e.mu.Unlock()
+			e.c.log.Info().Str("call_id", callID).Dur("age", age).
+				Msg("peer video upgrade expired before it was accepted")
+			return errors.New("meowcaller: peer video upgrade expired")
+		}
 		m.peerVideoUpgrade = false
 	case signaling.VideoStateStopped:
 		m.localVideo = false
@@ -351,6 +370,7 @@ func (e *engine) transitionVideo(callID string, transition int) error {
 	if current := e.calls[callID]; current == m {
 		if transition == signaling.VideoStateUpgradeAccept {
 			current.peerVideoUpgrade = true
+			current.peerVideoUpgradeAt = time.Now()
 		} else {
 			current.localVideo = false
 			current.videoGate = false
@@ -1365,6 +1385,9 @@ func (e *engine) onVideoStanza(v *waBinary.Node) {
 	switch state {
 	case signaling.VideoStateUpgradeRequest, signaling.VideoStateUpgradeRequestV2:
 		m.peerVideoUpgrade = true
+		// A repeat request restarts the clock, so the window always tracks the
+		// request the peer is actually waiting on.
+		m.peerVideoUpgradeAt = time.Now()
 	case signaling.VideoStateEnabled:
 		m.remoteVideo = true
 		if m.localVideo && m.videoGate {

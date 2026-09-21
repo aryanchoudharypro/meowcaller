@@ -1,6 +1,8 @@
 package meowcaller
 
 import (
+	"time"
+
 	"context"
 	"errors"
 	"strconv"
@@ -156,6 +158,7 @@ func TestCallAcceptVideoPreservesDisabledLocalFlow(t *testing.T) {
 	m := eng.calls[call.ID()]
 	m.localVideo = false
 	m.peerVideoUpgrade = true
+	m.peerVideoUpgradeAt = time.Now()
 	m.videoTx = &videoSender{}
 	var states []int
 	eng.sendCallNode = func(_ context.Context, node waBinary.Node) error {
@@ -181,6 +184,7 @@ func TestCallAcceptVideoPreservesEnabledLocalFlow(t *testing.T) {
 	eng, call := testEngineWithOutgoingCall()
 	m := eng.calls[call.ID()]
 	m.peerVideoUpgrade = true
+	m.peerVideoUpgradeAt = time.Now()
 	m.videoTx = &videoSender{active: true}
 	var states []int
 	eng.sendCallNode = func(_ context.Context, node waBinary.Node) error {
@@ -581,5 +585,55 @@ func TestFinishCallClosesAttachedAudioDevices(t *testing.T) {
 	}
 	if sink.closeCount != 1 {
 		t.Fatalf("audio sink close count = %d, want 1", sink.closeCount)
+	}
+}
+
+// Camera preparation waits for the first decodable IDR, outside the signaling
+// path, so it can outlast the peer's own five-second timeout. By then the peer
+// has given up, and its cancel may never arrive. Completing the accept anyway
+// turns the camera on for a call nobody is waiting on and holds the device
+// against the next attempt.
+func TestCallAcceptVideoRefusesAnExpiredPeerUpgrade(t *testing.T) {
+	eng, call := testEngineWithOutgoingCall()
+	m := eng.calls[call.ID()]
+	m.peerVideoUpgrade = true
+	m.peerVideoUpgradeAt = time.Now().Add(-peerVideoUpgradeTimeout - time.Second)
+	m.videoTx = &videoSender{}
+	var states []int
+	eng.sendCallNode = func(_ context.Context, node waBinary.Node) error {
+		states = append(states, node.GetChildren()[0].AttrGetter().Int("state"))
+		return nil
+	}
+
+	if err := call.AcceptVideo(); err == nil {
+		t.Fatal("AcceptVideo accepted an upgrade the peer had already timed out")
+	}
+	if len(states) != 0 {
+		t.Errorf("an expired upgrade put %v on the wire, want nothing", states)
+	}
+	if active, _ := senderVideoState(m.videoTx); active {
+		t.Error("an expired upgrade switched the camera on")
+	}
+	if m.peerVideoUpgrade {
+		t.Error("an expired upgrade must be cleared, not left acceptable")
+	}
+}
+
+// A repeat request restarts the clock, so the window tracks the request the
+// peer is actually waiting on rather than the one it abandoned.
+func TestPeerVideoUpgradeRequestRestartsTheWindow(t *testing.T) {
+	eng, call := testEngineWithOutgoingCall()
+	m := eng.calls[call.ID()]
+	m.peerVideoUpgrade = true
+	m.peerVideoUpgradeAt = time.Now().Add(-peerVideoUpgradeTimeout - time.Second)
+	m.videoTx = &videoSender{}
+	eng.sendCallNode = func(_ context.Context, _ waBinary.Node) error { return nil }
+
+	// What a repeat <video state=upgrade_request> does to the call.
+	m.peerVideoUpgrade = true
+	m.peerVideoUpgradeAt = time.Now()
+
+	if err := call.AcceptVideo(); err != nil {
+		t.Fatalf("a fresh request must be acceptable again: %v", err)
 	}
 }
