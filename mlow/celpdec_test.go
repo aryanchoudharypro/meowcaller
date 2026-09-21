@@ -51,7 +51,7 @@ func TestExcPre(t *testing.T) {
 		lowRate := (frame[0]>>2)&1 != 0
 		dec := NewRangeDecoder(frame[1:])
 		for f := 0; f < 3; f++ {
-			lsf := DecodeSmplLsf(dec, tbl, &lstate, config, f)
+			lsf := DecodeSmplLsf(dec, tbl, &lstate, config, f, true)
 			pulses := DecodeSmplPulses(dec, mem, 320, 4, 1, int32(config), lsf.Stage1)
 			voiced := lsf.Stage1 == 1
 			var params CelpDecParams

@@ -37,7 +37,7 @@ func TestDecodeSmplGains(t *testing.T) {
 		}
 		var st SmplLsfState
 		dec := NewRangeDecoder(frame[1:])
-		lsf := DecodeSmplLsf(dec, tbl, &st, 0, 0)
+		lsf := DecodeSmplLsf(dec, tbl, &st, 0, 0, true)
 		pulses := DecodeSmplPulses(dec, mem, 320, 4, 1, 0, lsf.Stage1)
 		g := DecodeSmplGains(dec, mem, 4, pulses.Subfr)
 

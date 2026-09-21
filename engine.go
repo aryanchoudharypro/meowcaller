@@ -63,26 +63,32 @@ type engineCall struct {
 	peerBareJID          types.JID
 	notifiedOtherDevices bool
 
-	direction         CallDirection
-	codec             AudioCodec   // audio codec for this call, selected from voip_settings (MLow default)
-	localVideo        bool         // this client is sending, or has requested to send, video
-	remoteVideo       bool         // the peer is sending video to this client
-	videoGate         bool         // outbound upgrade is waiting for peer acceptance
-	peerVideoUpgrade  bool         // the peer's inbound upgrade is waiting for local acceptance
-	videoTx           *videoSender // video send pipeline, live while media runs
-	appDataTx         *appDataSender
-	rekeyPeer         func(string) error
-	group             bool
-	groupUpdate       *groupCallUpdate
-	groupReceivers    *participantReceiveRegistry
-	groupRawEpoch     []byte
-	groupEpochTxID    uint32
-	hasGroupEpoch     bool
-	started           bool
-	cancel            context.CancelFunc // tears down this call's media goroutine
-	waitingRoomCancel context.CancelFunc
-	inviteSelfDevice  groupCallDevice
-	invitePeerDevice  groupCallDevice
+	direction  CallDirection
+	codec      AudioCodec // audio codec for this call: voip_settings, gated by the peer's capability
+	localCodec AudioCodec // what voip_settings alone asked for, before the peer gate
+	// peerMlowCapability is what the peer's <capability> last said about index 31.
+	// Held on the call because a later <voip_settings> (the server's call ack) would
+	// otherwise recompute codec from the local preference alone and silently undo a
+	// downgrade the peer already forced.
+	peerMlowCapability signaling.CapabilityBit
+	localVideo         bool         // this client is sending, or has requested to send, video
+	remoteVideo        bool         // the peer is sending video to this client
+	videoGate          bool         // outbound upgrade is waiting for peer acceptance
+	peerVideoUpgrade   bool         // the peer's inbound upgrade is waiting for local acceptance
+	videoTx            *videoSender // video send pipeline, live while media runs
+	appDataTx          *appDataSender
+	rekeyPeer          func(string) error
+	group              bool
+	groupUpdate        *groupCallUpdate
+	groupReceivers     *participantReceiveRegistry
+	groupRawEpoch      []byte
+	groupEpochTxID     uint32
+	hasGroupEpoch      bool
+	started            bool
+	cancel             context.CancelFunc // tears down this call's media goroutine
+	waitingRoomCancel  context.CancelFunc
+	inviteSelfDevice   groupCallDevice
+	invitePeerDevice   groupCallDevice
 
 	// acceptPending guards sendAccept against sending <accept> twice for the same call.
 	acceptPending bool
@@ -783,14 +789,30 @@ func (e *engine) sendAccept(callID string, to, creator types.JID) {
 		return
 	}
 	isVideo := m.localVideo || m.remoteVideo
+	codec := m.codec
 	m.acceptPending = false
 	e.mu.Unlock()
 
+	// The answer states our own codec selection twice, and omitting either is what
+	// leaves a call connected but silent. <capability> is how the peer learns we do
+	// MLow at all — a missing blob reads as "unstated", so a peer that would have
+	// matched us never does. <voip_settings> is the directional field that selects
+	// the peer's DECODER; without it a standard-Opus answer still leaves the peer
+	// decoding our packets as MLow.
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/pull/1050
+	acceptCapability := signaling.CapabilityOffer
+	var acceptVoipSettings []byte
+	if codec == AudioCodecOpus {
+		acceptCapability = signaling.CapabilityStandardOpusOffer
+		acceptVoipSettings = signaling.StandardOpusVoipSettings(false)
+	}
 	accept := signaling.BuildAccept(&signaling.AcceptParams{
 		CallID: callID, To: to, CallCreator: creator,
-		AudioRates: []string{"16000"},
-		Metadata:   waBinary.Attrs{"peer_abtest_bucket_id_list": "125208,94276"},
-		Video:      isVideo,
+		AudioRates:   []string{"16000"},
+		Metadata:     waBinary.Attrs{"peer_abtest_bucket_id_list": "125208,94276"},
+		Capability:   acceptCapability,
+		VoipSettings: acceptVoipSettings,
+		Video:        isVideo,
 	})
 	accept.Attrs["id"] = e.c.wa.DangerousInternals().GenerateRequestID()
 	if err := e.transmitCallNode(context.Background(), accept); err != nil {
@@ -1142,22 +1164,60 @@ type rlProbe struct {
 // codec on the call. Absent or unparseable settings leave the call on MLow. The
 // caller holds e.mu.
 func (e *engine) applyVoipSettingsCodec(m *engineCall, node *waBinary.Node, callID string) {
-	vsNode := findChild(node, "voip_settings")
-	if vsNode == nil {
+	// The peer's capability rides the same node on every peer-sent stanza, and it
+	// gates the codec regardless of whether this one carried <voip_settings>.
+	if bit, ok := peerCapabilityBit(node, signaling.CapabilityMlowCodecV1); ok {
+		m.peerMlowCapability = bit
+	}
+	if vsNode := findChild(node, "voip_settings"); vsNode != nil {
+		content, _ := vsNode.Content.([]byte)
+		vs, err := signaling.ParseVoipSettings(content, e.c.log)
+		if err != nil {
+			e.c.log.Debug().Err(err).Str("call_id", callID).Msg("voip_settings parse failed; keeping mlow")
+		} else {
+			m.localCodec = selectAudioCodec(vs)
+		}
+	}
+	e.resolveAudioCodec(m, callID)
+}
+
+// peerCapabilityBit reads one capability index out of a peer-sent stanza. The
+// second return is false when the node carries no <capability> at all, which is
+// not evidence either way and must not overwrite what an earlier stanza said.
+func peerCapabilityBit(node *waBinary.Node, index uint32) (signaling.CapabilityBit, bool) {
+	if node == nil {
+		return signaling.CapabilityUnknown, false
+	}
+	capability := findChild(node, "capability")
+	if capability == nil {
+		return signaling.CapabilityUnknown, false
+	}
+	blob, _ := capability.Content.([]byte)
+	version, err := strconv.ParseUint(capability.AttrGetter().String("ver"), 10, 32)
+	return signaling.CapabilityBitAt(uint32(version), err == nil, blob, index), true
+}
+
+// resolveAudioCodec folds the peer's capability into the locally-requested codec.
+// The gate is a mutual AND: a peer that announces a readable capability without
+// index 31 drops MLow for BOTH directions, because RTP payload type 120 carries
+// either codec and the negotiation is the only thing that says which. Feeding a
+// standard-Opus peer's packets to the MLow decoder silences the call both ways.
+// Source of truth: https://github.com/oxidezap/whatsapp-rust/pull/1111
+func (e *engine) resolveAudioCodec(m *engineCall, callID string) {
+	want := m.localCodec
+	if want == AudioCodecMlow && !signaling.MlowAfterPeerCapability(true, m.peerMlowCapability) {
+		want = AudioCodecOpus
+	}
+	if want == m.codec {
 		return
 	}
-	content, _ := vsNode.Content.([]byte)
-	vs, err := signaling.ParseVoipSettings(content, e.c.log)
-	if err != nil {
-		e.c.log.Debug().Err(err).Str("call_id", callID).Msg("voip_settings parse failed; keeping mlow")
-		return
-	}
-	m.codec = selectAudioCodec(vs)
 	e.c.log.Info().
 		Str("call_id", callID).
-		Str("codec", m.codec.String()).
-		Bool("use_mlow_codec_v1", vs.UseMlowCodecV1).
-		Msg("selected audio codec from voip_settings")
+		Str("codec", want.String()).
+		Str("local_codec", m.localCodec.String()).
+		Int("peer_mlow_capability", int(m.peerMlowCapability)).
+		Msg("selected audio codec")
+	m.codec = want
 }
 
 // onCallAck handles an <ack class="call"> node. For an outbound offer the relay

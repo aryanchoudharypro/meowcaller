@@ -42,7 +42,7 @@ func TestDecodeSmplPulses(t *testing.T) {
 		}
 		var st SmplLsfState
 		dec := NewRangeDecoder(frame[1:])
-		lsf := DecodeSmplLsf(dec, tbl, &st, 0, 0)
+		lsf := DecodeSmplLsf(dec, tbl, &st, 0, 0, true)
 		pr := DecodeSmplPulses(dec, mem, 320, 4, 1, 0, lsf.Stage1)
 
 		if !reflect.DeepEqual(pr.Subfr[:], rec.Subfr) {

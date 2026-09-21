@@ -17,8 +17,15 @@ import (
 // CapabilityOffer is the capability blob for <offer>/<accept> (ver=1).
 var CapabilityOffer = []byte{0x01, 0x05, 0xf7, 0x09, 0xe0, 0xbb, 0x13}
 
-// CapabilityVideoOffer is the capability blob observed in WhatsApp video offers.
-var CapabilityVideoOffer = []byte{0x01, 0x05, 0xf7, 0x09, 0xe0, 0xfa, 0x13}
+// CapabilityVideoOffer is the capability blob a client places in a video <offer>.
+// Byte-matches the captured WhatsApp Web calling engine (JgwtTQVeWPm.wasm) driven
+// with the video flag set. The 0xfa byte 5 carried here previously came from an
+// unknown-platform capture and must not be sent: it clears bit 24, which every
+// rendering flow sets, and against Android it left callees answering a call whose
+// video never rendered. Call-link and group video paths inherit the same blob.
+// A video CALLEE preaccepts with CapabilityPreaccept, not this.
+// Source of truth: https://github.com/oxidezap/whatsapp-rust/pull/1483
+var CapabilityVideoOffer = []byte{0x01, 0x05, 0xf7, 0x09, 0xe0, 0xbb, 0x53}
 
 // CapabilityPreaccept is the capability blob for <preaccept> (ver=1).
 var CapabilityPreaccept = []byte{0x01, 0x05, 0xf7, 0x09, 0xe0, 0xbb, 0x07}

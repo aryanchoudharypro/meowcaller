@@ -65,7 +65,7 @@ func TestDecodeSmplLsf(t *testing.T) {
 		}
 		var st SmplLsfState
 		dec := NewRangeDecoder(frame[1:]) // skip the leading TOC byte
-		idx := DecodeSmplLsf(dec, tbl, &st, 0, 0)
+		idx := DecodeSmplLsf(dec, tbl, &st, 0, 0, true)
 
 		if idx.Stage1 != rec.Stage1 {
 			t.Errorf("rec %d: stage1 got %d want %d", i, idx.Stage1, rec.Stage1)

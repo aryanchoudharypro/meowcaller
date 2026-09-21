@@ -90,12 +90,16 @@ type SmplLsfIndices struct {
 // whose CDF is selected by (match, current stage1!=0); (3) 16 stage-2 residuals,
 // each coeff k from its own CDF LsfStage2[stage1][config][grid][k]; (4) the 3-symbol
 // "extra" LSF CDF, which always fires for our 1:1 path.
+// codedAsActiveVoice gates the two symbols a frame coded inactive never puts on
+// the wire. Reading them would consume symbols that were never written and desync
+// every field after, so a DTX-off background-noise frame must pass false here.
 func DecodeSmplLsf(
 	dec *RangeDecoder,
 	t *SmplTables,
 	st *SmplLsfState,
 	config int,
 	intf int,
+	codedAsActiveVoice bool,
 ) SmplLsfIndices {
 	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/c697c36ffa7875c304ceea9154be30b66cada914/wacore/src/voip/mlow/smpl_decode.rs#L218-L291
 	var idx SmplLsfIndices
@@ -110,7 +114,13 @@ func DecodeSmplLsf(
 			sel = 1
 		}
 	}
-	stage1 := dec.DecodeCDF(t.LsfSel[sel])
+	// The voicing symbol is on the wire only when the frame was coded as active
+	// voice. A frame coded inactive (DTX off, so the encoder keeps sending
+	// background noise) carries none and is unvoiced by definition.
+	var stage1 int32
+	if codedAsActiveVoice {
+		stage1 = dec.DecodeCDF(t.LsfSel[sel])
+	}
 	idx.Stage1 = stage1
 
 	// match := (not the first frame) && stage1 == prev. On a no-match the four
@@ -149,7 +159,11 @@ func DecodeSmplLsf(
 		idx.StageNraw[k] = int32(len(c)) - 2
 	}
 
-	// Read 4 — the 3-symbol "extra" LSF CDF, which always fires for the 1:1 path.
-	idx.Extra = dec.DecodeCDF(t.LsfExtra)
+	// Read 4 — the LSF interpolation index, a 3-symbol static CDF. On the wire only
+	// for an active-voice frame; the reference gates it on the same flag as the
+	// voicing symbol above.
+	if codedAsActiveVoice {
+		idx.Extra = dec.DecodeCDF(t.LsfExtra)
+	}
 	return idx
 }

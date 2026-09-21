@@ -147,8 +147,28 @@ func (d *MlowDecoder) decodeFrame(frame []byte) []float32 {
 		d.log.Debug().Msg("decode frame: standard-Opus packet, not handled, emitting silence")
 		return make([]float32, outLen)
 	}
-	if toc.SID || !toc.Active {
-		d.log.Trace().Bool("sid", toc.SID).Bool("active", toc.Active).Msg("decode frame: inactive/SID, emitting silence")
+	// A SID (DTX/CNG) frame carries comfort noise rather than coded voice and is
+	// silenced without opening the range coder, so its geometry can never desync.
+	// Handled before the operating-point guard so an off-point SID reads as the
+	// benign silence it is instead of tripping the "dropped" canary below.
+	//
+	// A frame that is merely coded inactive is NOT silence: with DTX off the
+	// encoder keeps sending background noise this way and the reference decodes
+	// it. Silencing it drops every pause of such a peer on the floor, which does
+	// not sound broken, it sounds like a slightly dead line.
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/pull/1113
+	if toc.SID {
+		d.log.Trace().Bool("sid", toc.SID).Msg("decode frame: SID, emitting silence")
+		return make([]float32, outLen)
+	}
+	// An inactive frame that is also off the operating point is not DTX-off
+	// background noise — it is the short startup silence a real peer emits before
+	// speech (10 ms in the captured stream). It has never been decodable, so keep
+	// silencing it at its nominal length: routing it onward would only trip the
+	// "dropped" canary below and stretch it to a full 60 ms slot.
+	if !toc.Active && (toc.SampleRate != 16000 || toc.FrameMs != 60) {
+		d.log.Trace().Int("frame_ms", toc.FrameMs).Int("sample_rate", toc.SampleRate).
+			Msg("decode frame: inactive off-point, emitting silence")
 		return make([]float32, outLen)
 	}
 	if toc.SampleRate != 16000 || toc.FrameMs != 60 {
@@ -164,10 +184,14 @@ func (d *MlowDecoder) decodeFrame(frame []byte) []float32 {
 		}
 		return make([]float32, opusFrameSamps)
 	}
-	return d.decodeActiveFrame(frame, outLen)
+	return d.decodeActiveFrame(frame, outLen, toc.Active)
 }
 
-func (d *MlowDecoder) decodeActiveFrame(frame []byte, outLen int) []float32 {
+// decodeActiveFrame decodes a non-SID frame. codedAsActiveVoice is the TOC's
+// active-voice bit: false means the frame carries background noise coded without
+// the voicing and interpolation symbols, and it must be threaded into every read
+// that is gated on them.
+func (d *MlowDecoder) decodeActiveFrame(frame []byte, outLen int, codedAsActiveVoice bool) []float32 {
 	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/ed12f359a086b28e807ba236f0977af1000859fe/wacore/src/voip/mlow/decoder.rs#L101-L217
 	config := int(frame[0]>>2) & 1
 	tbl := LoadSmplTables()
@@ -186,8 +210,12 @@ func (d *MlowDecoder) decodeActiveFrame(frame []byte, outLen int) []float32 {
 	packetLags := make([]float32, 0, 3*8)
 	var avgNormBr float32
 	for f := 0; f < 3; f++ {
-		lsf := DecodeSmplLsf(dec, tbl, &d.state.Lstate, config, f)
-		pulses := DecodeSmplPulses(dec, mem, SmplIntfLen, numSubframes, 1, int32(config), lsf.Stage1)
+		lsf := DecodeSmplLsf(dec, tbl, &d.state.Lstate, config, f, codedAsActiveVoice)
+		activeVoice := int32(0)
+		if codedAsActiveVoice {
+			activeVoice = 1
+		}
+		pulses := DecodeSmplPulses(dec, mem, SmplIntfLen, numSubframes, activeVoice, int32(config), lsf.Stage1)
 		voiced := lsf.Stage1 == 1
 		var total int32
 		for _, c := range pulses.Subfr {

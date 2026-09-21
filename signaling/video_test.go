@@ -34,6 +34,13 @@ func TestOfferAdvertisesVideo(t *testing.T) {
 	if _, has := video.Attrs["orientation"]; has {
 		t.Error("video offer must not carry legacy orientation attr")
 	}
+	// The engine emits zero screen geometry in a 1:1 video offer; real geometry here
+	// makes callees answer without rendering our stream.
+	for attr, want := range map[string]string{"screen_width": "0", "screen_height": "0"} {
+		if got, _ := attrString(video, attr); got != want {
+			t.Errorf("1:1 video offer %s = %q, want %q", attr, got, want)
+		}
+	}
 	capability, ok := getChild(t, offer, "capability")
 	if !ok {
 		t.Fatal("video offer capability child missing")
@@ -42,9 +49,25 @@ func TestOfferAdvertisesVideo(t *testing.T) {
 	if !ok {
 		t.Fatalf("video offer capability content = %T, want []byte", capability.Content)
 	}
-	wantCapability := []byte{0x01, 0x05, 0xf7, 0x09, 0xe0, 0xfa, 0x13}
+	// Byte-for-byte what the captured engine sends with the video flag set. The 0xfa
+	// variant this used to assert clears bit 24 and never renders on the peer.
+	wantCapability := []byte{0x01, 0x05, 0xf7, 0x09, 0xe0, 0xbb, 0x53}
 	if !bytes.Equal(gotCapability, wantCapability) {
 		t.Errorf("video offer capability = %x, want %x", gotCapability, wantCapability)
+	}
+	if !bytes.Equal(gotCapability, CapabilityVideoOffer) {
+		t.Errorf("video offer capability = %x, want CapabilityVideoOffer %x", gotCapability, CapabilityVideoOffer)
+	}
+}
+
+// TestGroupVideoOfferKeepsRealScreenGeometry pins the 1:1-vs-group split: only the 1:1
+// offer zeroes its screen geometry.
+func TestGroupVideoOfferKeepsRealScreenGeometry(t *testing.T) {
+	video := videoGroupOfferNode()
+	for attr, want := range map[string]string{"screen_width": "1920", "screen_height": "1080"} {
+		if got, _ := attrString(video, attr); got != want {
+			t.Errorf("group video offer %s = %q, want %q", attr, got, want)
+		}
 	}
 }
 

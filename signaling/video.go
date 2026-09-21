@@ -108,9 +108,26 @@ func BuildVideoAck(original *waBinary.Node) (waBinary.Node, bool) {
 	return waBinary.Node{Tag: "ack", Attrs: attrs}, true
 }
 
-// videoOfferNode builds the <video> advertisement for an <offer> (sits after the
-// <audio> children, before <net>).
+// videoOfferNode builds the <video> advertisement for a 1:1 <offer> (sits after the
+// <audio> children, before <net>). The captured WhatsApp Web calling engine emits zero
+// screen geometry here and never patches it afterwards; sending a real 1920x1080 left
+// callees answering the call without rendering our stream. The callee path
+// (videoPreacceptNode) already sends zeroes and works. Group offers keep real geometry,
+// see videoGroupOfferNode.
+// Source of truth: https://github.com/oxidezap/whatsapp-rust/pull/1476
 func videoOfferNode() waBinary.Node {
+	return waBinary.Node{Tag: "video", Attrs: waBinary.Attrs{
+		"enc":                videoOfferEncH264,
+		"dec":                videoOfferDecH264,
+		"screen_width":       "0",
+		"screen_height":      "0",
+		"device_orientation": "0",
+	}}
+}
+
+// videoGroupOfferNode builds the <video> advertisement for a group <offer>. Unlike the
+// 1:1 offer, group calls advertise real screen geometry.
+func videoGroupOfferNode() waBinary.Node {
 	return waBinary.Node{Tag: "video", Attrs: waBinary.Attrs{
 		"enc":                videoOfferEncH264,
 		"dec":                videoOfferDecH264,
