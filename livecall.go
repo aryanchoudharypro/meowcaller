@@ -277,7 +277,12 @@ func (c *Call) IsReceivingVideo() bool {
 func (c *Call) Answer() error { return c.eng.answer(c) }
 
 // Reject declines an inbound call.
-func (c *Call) Reject() error { return c.eng.reject(c) }
+func (c *Call) Reject() error { return c.eng.reject(c, "") }
+
+// RejectBusy declines an inbound call because this device is already on
+// another one. Unlike Reject it doesn't decline for the user: the caller keeps
+// ringing the user's other devices, and hears busy only if the phone says so.
+func (c *Call) RejectBusy() error { return c.eng.reject(c, signaling.RejectReasonBusy) }
 
 // Hangup ends the call (either direction) and tears down media.
 func (c *Call) Hangup() error { return c.eng.hangup(c) }

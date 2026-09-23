@@ -340,14 +340,34 @@ func BuildMuteV2(callID string, to, callCreator types.JID, muteState string, log
 	return callWrap(to, nil, action)
 }
 
+// Reject reasons. Without one, a reject is the callee declining the call. With
+// one, it speaks only for the device that sent it: RejectReasonBusy is a device
+// already on a call (or one that can't do calls), RejectReasonEnc a device that
+// couldn't decrypt the offer. The callee's other devices go on ringing.
+// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/c65b402/wacore/src/stanza/call.rs#L651-L657
+const (
+	RejectReasonBusy = "busy"
+	RejectReasonEnc  = "enc"
+)
+
 // BuildReject builds <reject call-id call-creator>.
 func BuildReject(callID string, to, callCreator types.JID, log ...zerolog.Logger) waBinary.Node {
+	return BuildRejectWithReason(callID, to, callCreator, "", log...)
+}
+
+// BuildRejectWithReason builds <reject call-id call-creator reason>, leaving
+// reason out when it is empty.
+func BuildRejectWithReason(callID string, to, callCreator types.JID, reason string, log ...zerolog.Logger) waBinary.Node {
 	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/41095d4e6ba4610e054e9ede3af1d5e88a83faee/wacore/src/voip/stanza.rs#L306-L316
 	lg := pickLog(log)
 	lg.Debug().
 		Str("call_id", callID).
+		Str("reason", reason).
 		Msg("building reject stanza")
 	action := waBinary.Node{Tag: "reject", Attrs: waBinary.Attrs{"call-id": callID, "call-creator": callCreator}}
+	if reason != "" {
+		action.Attrs["reason"] = reason
+	}
 	return callWrap(to, nil, action)
 }
 

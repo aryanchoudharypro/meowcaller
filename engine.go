@@ -866,13 +866,13 @@ func (e *engine) sendAccept(callID string, to, creator types.JID) {
 }
 
 // reject declines an inbound call.
-func (e *engine) reject(c *Call) error {
+func (e *engine) reject(c *Call, reason string) error {
 	m := e.lookup(c.id)
 	to, creator := c.peer, c.peer
 	if m != nil {
 		to, creator = m.from, m.creator
 	}
-	rej := signaling.BuildReject(c.id, to, creator)
+	rej := signaling.BuildRejectWithReason(c.id, to, creator, reason)
 	rej.Attrs["id"] = e.nextCallNodeID()
 	e.finishCall(c.id, "rejected")
 	if err := e.transmitCallNode(context.Background(), rej); err != nil {
@@ -1156,20 +1156,59 @@ func preferQualifiedPeer(current string, signaled types.JID) string {
 	return signaled.String()
 }
 
-// onReject tears down an outgoing call when the peer declines it.
+// onReject tears down a call when it is declined: an outgoing call the callee
+// declined, or an incoming one we declined on another of our devices.
+//
+// Not every reject is a decline. On an outgoing 1:1 call, a device that can't
+// decrypt the offer ("enc"), or a linked device refusing for any reason of its
+// own (typically "busy", already on a call), speaks only for itself; the
+// callee's other devices go on ringing. WhatsApp Web's call stack logs the
+// latter as "ignoring non user reject from companion device". A "busy" from the
+// callee's phone ends the call as "busy", which WhatsApp Web shows as busy.
 func (e *engine) onReject(ev *events.CallReject) {
 	m := e.lookup(ev.CallID)
 	if m == nil {
 		return
 	}
+	reason := rejectReason(ev.Data)
 	e.c.log.Info().
 		Str("call_id", ev.CallID).
 		Str("from", ev.From.String()).
+		Str("reason", reason).
 		Msg("peer rejected call")
 	e.c.diag.Emit("meta", map[string]any{
-		"event": "peer_reject", "call_id": ev.CallID, "from": ev.From.String(),
+		"event": "peer_reject", "call_id": ev.CallID, "from": ev.From.String(), "reason": reason,
 	})
+	if m.direction == CallDirectionOutgoing && !m.group && rejectSpeaksForOneDevice(ev.From, reason) {
+		e.c.log.Info().
+			Str("call_id", ev.CallID).
+			Str("from", ev.From.String()).
+			Msg("reject is from one device only; the callee's other devices keep ringing")
+		return
+	}
+	if reason == signaling.RejectReasonBusy {
+		e.finishCall(ev.CallID, "busy")
+		return
+	}
 	e.finishCall(ev.CallID, "rejected")
+}
+
+// rejectReason is the reason attribute of a <reject>, or "" for a plain decline.
+func rejectReason(node *waBinary.Node) string {
+	if node == nil {
+		return ""
+	}
+	reason, _ := node.Attrs["reason"].(string)
+	return reason
+}
+
+// rejectSpeaksForOneDevice reports whether a reject from device only says that
+// device can't take the call, rather than the callee declining it.
+func rejectSpeaksForOneDevice(device types.JID, reason string) bool {
+	if reason == signaling.RejectReasonEnc {
+		return true
+	}
+	return reason != "" && device.Device != 0
 }
 
 // rlProbe is one relay candidate from a relaylatency probe.
