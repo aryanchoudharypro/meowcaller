@@ -29,6 +29,9 @@ type Call struct {
 	onMuteState               func(muted bool)
 	muted                     bool
 	muteMu                    sync.Mutex
+	stats                     mediaStatsCounters
+	health                    audioHealthWatch
+	onAudioHealth             func(AudioHealth)
 	videoSink                 VideoSink
 	onVideoState              func(VideoState)
 	onVideoKeyframeRequest    func()
@@ -773,6 +776,28 @@ func (c *Call) isPeerAccepted() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.peerAccepted
+}
+
+// MediaStats returns this call's media counters. All zero until media starts;
+// still readable after the call ends.
+func (c *Call) MediaStats() MediaStats {
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/3987f7c809a0b1ca3296a0e9a4fbb7ce96ea3181/src/voip/facade.rs#L3605-L3610
+	return c.stats.snapshot()
+}
+
+// OnAudioHealth registers a callback fired when the call's audio stalls (no
+// packets arriving) or goes silent (packets arriving, none becoming sound),
+// and again every 10s while that lasts.
+func (c *Call) OnAudioHealth(fn func(AudioHealth)) {
+	c.mu.Lock()
+	c.onAudioHealth = fn
+	c.mu.Unlock()
+}
+
+func (c *Call) onAudioHealthFn() func(AudioHealth) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.onAudioHealth
 }
 
 // OnMuteState registers a callback fired for each inbound WhatsApp mute_v2 state.

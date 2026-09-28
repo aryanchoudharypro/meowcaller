@@ -517,6 +517,33 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 	// the relay never answers our allocate.
 	var relayRx atomic.Uint64
 
+	// Audio-health watchdog: says when the call carries no audio, and why.
+	if call != nil {
+		// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/3987f7c809a0b1ca3296a0e9a4fbb7ce96ea3181/wacore/src/voip_control/media_stats.rs#L158-L167
+		call.health.mediaStarted(time.Now())
+		go func() {
+			ticker := time.NewTicker(audioHealthTick)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case now := <-ticker.C:
+					health, alarm := call.health.poll(now, call.stats.snapshot())
+					if !alarm {
+						continue
+					}
+					log.Warn().Bool("stalled", health.Stalled).Dur("silent_for", health.SilentFor).
+						Uint32("rtp_received", health.RTPReceived).Uint32("frames_produced", health.FramesProduced).
+						Str("reason", string(health.Reason)).Msg("call audio health alarm")
+					if fn := call.onAudioHealthFn(); fn != nil {
+						fn(health)
+					}
+				}
+			}
+		}()
+	}
+
 	// Inbound calls are torn down by the caller within ~400ms if the relay bind never
 	// comes alive; check at 400ms and 900ms and say so explicitly.
 	go func() {
@@ -661,6 +688,9 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 			})
 			if _, err := ch.Send(packet); err != nil {
 				return
+			}
+			if call != nil {
+				call.stats.framesSent.Add(1)
 			}
 			if txCount++; txCount == 1 {
 				log.Info().Int("bytes", len(packet)).Msg("first RTP sent to relay, outbound media flowing")
@@ -1148,6 +1178,10 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 			continue
 		}
 		if kind != mediaPayloadAudio {
+			if call != nil {
+				call.health.onRTP(time.Now())
+				call.stats.payloadUnexpected.Add(1)
+			}
 			log.Debug().Uint8("payload_type", vh.PayloadType).Uint32("ssrc", vh.Ssrc).Msg("dropping unknown RTP payload")
 			e.c.diag.Emit("rtp", map[string]any{
 				"event": "unknown_payload", "pt": vh.PayloadType, "ssrc": vh.Ssrc,
@@ -1155,13 +1189,24 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 			})
 			continue
 		}
+		if call != nil {
+			call.health.onRTP(time.Now())
+		}
 		audio, ok := audioReceivers.DecodeAudio(pkt)
 		if !ok {
+			if call != nil {
+				call.stats.unprotectFailed.Add(1)
+			}
 			if unprotectFail++; unprotectFail == 1 {
 				log.Warn().Uint32("ssrc", vh.Ssrc).Int("bytes", n).Msg("audio RTP did not match an authenticated active participant")
 			}
 			e.c.diag.Emit("srtp", map[string]any{"event": "unprotect_failed", "ssrc": vh.Ssrc, "bytes": n})
 			continue
+		}
+		if call != nil {
+			call.stats.rtpReceived.Add(1)
+			call.stats.framesDecoded.Add(1)
+			call.health.onAudioProduced()
 		}
 		audioReception.Observe(audio.SSRC, vh.SequenceNumber, audio.Timestamp, uint64(time.Now().UnixMilli()), SampleRate)
 		e.c.diag.Emit("rtp", map[string]any{

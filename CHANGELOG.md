@@ -25,6 +25,16 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 - Validated by `engine_mute_test.go` (answered incoming, unmute-on-failure, ringing then
   answer, outgoing before/after accept, group target); full suite passes with `-race`.
 
+### media-stats — per-call media counters and audio-health watchdog — `implemented`
+
+- New `Call.MediaStats()` (authenticated/failed/unexpected-payload inbound packets,
+  decoded frames, sent frames) and `Call.OnAudioHealth`, a port of the reference's
+  `AudioHealthWatch` (datasheet `media-stats.md`): a stall alarm after 3s with no audio
+  packets (from media start or the last packet), a silence alarm when a 2s window holds
+  12+ packets and no decoded frame with the reason picked by dominance, re-alarming every
+  10s. Also logged at warn. Validated by `media_stats_test.go`.
+
+
 ### media/group-receive — wire per-packet RED redundancy into `DecodeAudio` — `implemented`
 
 - `MlowDecoder.SetRedundancy` was implemented and KAT-verified (`mlow/red`, module #14)
