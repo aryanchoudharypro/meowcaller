@@ -7,6 +7,24 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### engine/mute — `Call.SetMuted` announces this client's microphone state — `implemented`
+
+- New `Call.SetMuted(bool)` / `Call.IsMuted()`, ported from the reference's
+  `set_muted`/`mute_target`/`announce_muted_locked` (datasheet `call-mute.md`,
+  reference `3987f7c809a0b1ca3296a0e9a4fbb7ce96ea3181`). Until now a consumer could only
+  silence its own audio: the peer's call screen never showed us muted because nothing
+  sent our `mute_v2` after the answer.
+- Addressed through `engineCall.from`: `<call-id>@call` for a group, the caller for an
+  answered incoming call, the answering device once an outgoing call is accepted. Muting
+  applies locally first; unmuting only after the stanza is sent.
+- While muted the send loop encodes silence (the player is still drained so it can't
+  back up).
+- Deviations, documented in the datasheet: a mute chosen while an outgoing call rang is
+  announced from `onAccept`; `answer`'s own `mute_v2` now carries the current state
+  instead of a fixed `"0"`.
+- Validated by `engine_mute_test.go` (answered incoming, unmute-on-failure, ringing then
+  answer, outgoing before/after accept, group target); full suite passes with `-race`.
+
 ### media/group-receive — wire per-packet RED redundancy into `DecodeAudio` — `implemented`
 
 - `MlowDecoder.SetRedundancy` was implemented and KAT-verified (`mlow/red`, module #14)

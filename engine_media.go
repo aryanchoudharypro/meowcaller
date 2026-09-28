@@ -642,7 +642,8 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 			}
 			frame := silence
 			if player, _ := callPlayerSink(call); player != nil {
-				if f := player.nextFrame(); f != nil {
+				// Drained even while muted, so the source doesn't back up.
+				if f := player.nextFrame(); f != nil && !call.IsMuted() {
 					frame = f
 				}
 			}

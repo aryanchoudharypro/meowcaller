@@ -27,6 +27,8 @@ type Call struct {
 	peerAccepted              bool
 	acceptNotified            bool
 	onMuteState               func(muted bool)
+	muted                     bool
+	muteMu                    sync.Mutex
 	videoSink                 VideoSink
 	onVideoState              func(VideoState)
 	onVideoKeyframeRequest    func()
@@ -740,6 +742,37 @@ func (c *Call) markPeerAccepted() {
 	if shouldNotify {
 		fn()
 	}
+}
+
+// SetMuted mutes or unmutes this client's microphone and tells the other side,
+// whose call screen then shows it. While muted the call sends silence. On an
+// outgoing call nobody has answered yet the state is kept and announced once
+// someone answers.
+func (c *Call) SetMuted(muted bool) error {
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/3987f7c809a0b1ca3296a0e9a4fbb7ce96ea3181/src/voip/facade.rs#L3876-L3913
+	return c.eng.setMuted(c, muted)
+}
+
+// IsMuted reports whether this client's microphone is muted.
+func (c *Call) IsMuted() bool {
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/3987f7c809a0b1ca3296a0e9a4fbb7ce96ea3181/src/voip/facade.rs#L3934-L3936
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.muted
+}
+
+func (c *Call) setMutedLocal(muted bool) {
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/3987f7c809a0b1ca3296a0e9a4fbb7ce96ea3181/src/voip/facade.rs#L3900-L3912
+	c.mu.Lock()
+	c.muted = muted
+	c.mu.Unlock()
+}
+
+func (c *Call) isPeerAccepted() bool {
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/3987f7c809a0b1ca3296a0e9a4fbb7ce96ea3181/src/voip/facade.rs#L3916-L3931
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.peerAccepted
 }
 
 // OnMuteState registers a callback fired for each inbound WhatsApp mute_v2 state.

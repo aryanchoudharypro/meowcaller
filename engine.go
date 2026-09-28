@@ -790,7 +790,8 @@ func (e *engine) answer(c *Call) error {
 	c.setPhase(CallPhaseConnecting)
 	e.maybeStartMedia(c.id)
 
-	mute := signaling.BuildMuteV2(c.id, to, creator, "0")
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/3987f7c809a0b1ca3296a0e9a4fbb7ce96ea3181/src/voip/facade.rs#L3870-L3875
+	mute := signaling.BuildMuteV2(c.id, to, creator, muteStateAttr(c.IsMuted()))
 	mute.Attrs["id"] = e.c.wa.DangerousInternals().GenerateRequestID()
 	if err := e.transmitCallNode(context.Background(), mute); err != nil {
 		e.c.log.Warn().Err(err).Str("call_id", c.id).Msg("send own mute_v2 failed")
@@ -1104,6 +1105,7 @@ func (e *engine) onAccept(ev *events.CallAccept) {
 	}
 	if m.call != nil {
 		m.call.markPeerAccepted()
+		e.announceMuteOnAccept(m.call)
 	}
 	e.c.log.Info().
 		Str("call_id", ev.CallID).
