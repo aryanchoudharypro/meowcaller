@@ -92,14 +92,10 @@ func (e *engine) inviteParticipant(ctx context.Context, callID, target string) e
 	if targetLID == self.ToNonAD() {
 		return errors.New("meowcaller: cannot add this client to its own call")
 	}
-	creator, participants, video, err := e.groupInviteRoster(callID)
+	requested, _ := parseCallTarget(target)
+	creator, participants, video, err := e.groupInviteContext(callID, targetLID, requested.ToNonAD(), false)
 	if err != nil {
 		return err
-	}
-	for _, participant := range participants {
-		if participant.JID.ToNonAD() == targetLID {
-			return errors.New("meowcaller: participant is already in the call roster")
-		}
 	}
 	targetDevices, err := e.discoverTargetDevices(ctx, targetLID)
 	if err != nil {
@@ -129,29 +125,10 @@ func (e *engine) ringParticipant(ctx context.Context, callID, target string) err
 		return err
 	}
 	targetLID = targetLID.ToNonAD()
-	creator, participants, video, err := e.groupInviteRoster(callID)
+	requested, _ := parseCallTarget(target)
+	creator, connected, video, err := e.groupInviteContext(callID, targetLID, requested.ToNonAD(), true)
 	if err != nil {
 		return err
-	}
-	found := false
-	connected := make([]signaling.GroupCallParticipant, 0, len(participants))
-	for _, participant := range participants {
-		if participant.JID.ToNonAD() != targetLID {
-			if participant.State == "connected" {
-				connected = append(connected, participant)
-			}
-			continue
-		}
-		if participant.State == "connected" {
-			return errors.New("meowcaller: participant is already connected")
-		}
-		found = true
-	}
-	if !found {
-		return errors.New("meowcaller: participant is not in the call roster")
-	}
-	if len(connected) == 0 {
-		return errors.New("meowcaller: group call has no connected participant roster")
 	}
 	targetDevices, err := e.discoverTargetDevices(ctx, targetLID)
 	if err != nil {
@@ -250,6 +227,7 @@ func (e *engine) discoverTargetDevices(ctx context.Context, target types.JID) ([
 	if err != nil {
 		return nil, fmt.Errorf("meowcaller: call invite device discovery: %w", err)
 	}
+	devices = dropHostedDevices(devices)
 	if len(devices) == 0 {
 		return nil, fmt.Errorf("meowcaller: call invite target %s has no devices", target)
 	}
@@ -298,7 +276,7 @@ func (e *engine) discoverGroupParticipants(
 		return nil, fmt.Errorf("meowcaller: group device discovery: %w", err)
 	}
 	byUser := make(map[types.JID][]types.JID, len(users))
-	for _, device := range devices {
+	for _, device := range dropHostedDevices(devices) {
 		user := device.ToNonAD()
 		byUser[user] = append(byUser[user], device)
 	}
