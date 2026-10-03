@@ -193,30 +193,49 @@ func groupRelayData(update groupCallUpdate, inbound bool) (*relayData, error) {
 	return rd, nil
 }
 
-// selectGroupRelayEndpoint picks the relay a group allocation goes to. A relay
-// the call is already bound to stays in use when the allocation still lists it
-// at the same address; otherwise the allocation's own preferred endpoint wins
-// and the transport has to be redialed there first. The returned endpoint
-// always carries the group allocation's token index.
-func selectGroupRelayEndpoint(bound []relayEndpoint, groupRelay *relayData, inbound bool) (target relayEndpoint, alreadyBound bool, ok bool) {
-	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/d9f78b806f1f4ca80c8008caa5846e5d542c2c55/wacore/src/voip/engine.rs#L1564-L1578
+// webClientRelayPort is the relay port a web client's DataChannel transport uses.
+const webClientRelayPort = 3478
+
+// selectGroupRelayEndpoint picks the relay a group allocation goes to: the
+// allocation's first usable endpoint, as the other participants do. A relay
+// the call happens to be bound to already is NOT kept just because the
+// allocation still lists it: the phones move to the first endpoint and a
+// client left on a later one hears nobody (live capture, 2026-10-03, bom5c02
+// kept while both phones went to del2c03). alreadyBound reports whether the
+// chosen endpoint is one the call is connected to, so no redial is needed.
+func selectGroupRelayEndpoint(bound []relayEndpoint, groupRelay *relayData) (target relayEndpoint, alreadyBound bool, ok bool) {
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/d9f78b806f1f4ca80c8008caa5846e5d542c2c55/wacore/src/voip/engine.rs#L3743-L3760
 	if groupRelay == nil {
 		return relayEndpoint{}, false, false
 	}
-	for _, have := range bound {
-		if len(have.addresses) == 0 {
+	usable := func(endpoint *relayEndpoint) bool {
+		return !endpoint.isFNA && len(endpoint.addresses) != 0 &&
+			endpoint.addresses[0].ipv4 != "" && endpoint.addresses[0].port != 0 &&
+			int(endpoint.tokenID) < len(groupRelay.relayTokens) &&
+			len(groupRelay.relayTokens[endpoint.tokenID]) != 0
+	}
+	var preferred *relayEndpoint
+	for i := range groupRelay.endpoints {
+		endpoint := &groupRelay.endpoints[i]
+		if !usable(endpoint) {
 			continue
 		}
-		for _, candidate := range groupRelay.endpoints {
-			if len(candidate.addresses) != 0 && candidate.relayName == have.relayName &&
-				candidate.isFNA == have.isFNA && candidate.addresses[0] == have.addresses[0] {
-				return candidate, true, true
-			}
+		if endpoint.addresses[0].port == webClientRelayPort {
+			preferred = endpoint
+			break
+		}
+		if preferred == nil {
+			preferred = endpoint
 		}
 	}
-	preferred := getMediaRelayEndpoint(groupRelay, inbound)
-	if preferred == nil || len(preferred.addresses) == 0 {
+	if preferred == nil {
 		return relayEndpoint{}, false, false
+	}
+	for _, have := range bound {
+		if len(have.addresses) != 0 && have.relayName == preferred.relayName &&
+			have.addresses[0] == preferred.addresses[0] {
+			return *preferred, true, true
+		}
 	}
 	return *preferred, false, true
 }

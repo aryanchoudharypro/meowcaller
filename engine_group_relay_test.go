@@ -124,36 +124,51 @@ func TestConnectedRemoteParticipantPIDsExcludesSelfAndInactive(t *testing.T) {
 	}
 }
 
-func TestSelectGroupRelayEndpointMigratesWhenBoundRelayLeavesTheAllocation(t *testing.T) {
-	// A 1:1 call bound to del2c01/bom2c03/maa3c03 that became a group call whose
-	// allocation lists del2c02 first and still carries bom2c03 (live capture,
+func TestSelectGroupRelayEndpointFollowsTheAllocationsFirstRelay(t *testing.T) {
+	// A 1:1 call bound to del3c02/bom5c02/maa5c02 that became a group call whose
+	// allocation lists del2c03 first and still carries bom5c02. Both phones
+	// moved to del2c03; staying on bom5c02 left the call silent (live capture,
 	// 2026-10-03).
 	bound := []relayEndpoint{
-		{relayName: "del2c01", addresses: []relayAddress{{ipv4: "163.70.146.133", port: 3478}}},
-		{relayName: "bom2c03", addresses: []relayAddress{{ipv4: "57.144.125.57", port: 3478}}},
-		{relayName: "maa3c03", addresses: []relayAddress{{ipv4: "57.144.213.57", port: 3478}}},
+		{relayName: "del3c02", addresses: []relayAddress{{ipv4: "57.144.49.57", port: 3478}}},
+		{relayName: "bom5c02", addresses: []relayAddress{{ipv4: "57.144.43.57", port: 3478}}},
+		{relayName: "maa5c02", addresses: []relayAddress{{ipv4: "57.144.57.57", port: 3478}}},
 	}
-	group := &relayData{endpoints: []relayEndpoint{
-		{relayName: "del2c02", tokenID: 1, addresses: []relayAddress{{ipv4: "163.70.145.133", port: 3478}}},
-		{relayName: "bom2c03", tokenID: 0, addresses: []relayAddress{{ipv4: "57.144.125.57", port: 3478}}},
-	}}
-	target, alreadyBound, ok := selectGroupRelayEndpoint(bound, group, false)
-	if !ok || !alreadyBound || target.relayName != "bom2c03" || target.tokenID != 0 {
-		t.Fatalf("target = %+v alreadyBound=%v ok=%v, want the still-bound bom2c03 with the group token", target, alreadyBound, ok)
+	token := []byte{0x42}
+	group := &relayData{
+		relayTokens: [][]byte{token, token, token},
+		endpoints: []relayEndpoint{
+			{relayName: "del2c03", tokenID: 1, addresses: []relayAddress{{ipv4: "57.144.147.57", port: 3478}}},
+			{relayName: "bom5c02", tokenID: 2, addresses: []relayAddress{{ipv4: "57.144.43.57", port: 3478}}},
+		},
+	}
+	target, alreadyBound, ok := selectGroupRelayEndpoint(bound, group)
+	if !ok || alreadyBound || target.relayName != "del2c03" || target.tokenID != 1 {
+		t.Fatalf("target = %+v alreadyBound=%v ok=%v, want a redial to del2c03", target, alreadyBound, ok)
 	}
 
-	group.endpoints = group.endpoints[:1]
-	target, alreadyBound, ok = selectGroupRelayEndpoint(bound, group, false)
-	if !ok || alreadyBound || target.relayName != "del2c02" || target.addresses[0].ipv4 != "163.70.145.133" {
-		t.Fatalf("target = %+v alreadyBound=%v ok=%v, want a redial to del2c02", target, alreadyBound, ok)
+	// The allocation's first relay is one the call is already on: no redial,
+	// but the endpoint carries the group token.
+	group.endpoints[0], group.endpoints[1] = group.endpoints[1], group.endpoints[0]
+	target, alreadyBound, ok = selectGroupRelayEndpoint(bound, group)
+	if !ok || !alreadyBound || target.relayName != "bom5c02" || target.tokenID != 2 {
+		t.Fatalf("target = %+v alreadyBound=%v ok=%v, want the bound bom5c02 with the group token", target, alreadyBound, ok)
 	}
 
 	// Same relay name on a different address is a different socket.
-	group.endpoints = []relayEndpoint{
-		{relayName: "del2c01", addresses: []relayAddress{{ipv4: "163.70.146.134", port: 3478}}},
-	}
-	if target, alreadyBound, ok = selectGroupRelayEndpoint(bound, group, false); !ok || alreadyBound {
+	group.endpoints[0].addresses = []relayAddress{{ipv4: "57.144.43.58", port: 3478}}
+	if target, alreadyBound, ok = selectGroupRelayEndpoint(bound, group); !ok || alreadyBound {
 		t.Fatalf("target = %+v alreadyBound=%v ok=%v, want a redial for the moved address", target, alreadyBound, ok)
+	}
+
+	// Endpoints without a token, and FNA ones, are skipped.
+	group.endpoints = []relayEndpoint{
+		{relayName: "fna1c01", isFNA: true, addresses: []relayAddress{{ipv4: "10.0.0.1", port: 3478}}},
+		{relayName: "ccu2c02", tokenID: 9, addresses: []relayAddress{{ipv4: "10.0.0.2", port: 3478}}},
+		{relayName: "maa5c01", tokenID: 0, addresses: []relayAddress{{ipv4: "10.0.0.3", port: 3478}}},
+	}
+	if target, _, ok = selectGroupRelayEndpoint(bound, group); !ok || target.relayName != "maa5c01" {
+		t.Fatalf("target = %+v ok=%v, want maa5c01", target, ok)
 	}
 }
 

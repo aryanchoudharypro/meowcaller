@@ -261,7 +261,7 @@ func (e *engine) rebindGroupRelay(ctx context.Context, ch *relayFanout, bound []
 	if err != nil {
 		return bound, err
 	}
-	target, alreadyBound, ok := selectGroupRelayEndpoint(bound, groupRelay, inbound)
+	target, alreadyBound, ok := selectGroupRelayEndpoint(bound, groupRelay)
 	if !ok {
 		return bound, fmt.Errorf("meowcaller: group relay has no usable endpoint")
 	}
@@ -671,6 +671,10 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 					}
 					if err != nil {
 						log.Warn().Err(err).Str("call_id", callID).Msg("failed to refresh group relay allocation")
+					} else if allocateSent {
+						log.Info().Str("call_id", callID).Str("relay_name", boundRelays[0].relayName).
+							Uint32("relay_transaction_id", update.Relay.TransactionID).
+							Msg("sent group relay allocation")
 					}
 				}
 				activeParticipantIDs := audioReceivers.ActiveParticipantIDs()
