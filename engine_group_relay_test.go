@@ -123,3 +123,67 @@ func TestConnectedRemoteParticipantPIDsExcludesSelfAndInactive(t *testing.T) {
 		t.Fatalf("connected remote PIDs = %v, want [22]", got)
 	}
 }
+
+func TestSelectGroupRelayEndpointMigratesWhenBoundRelayLeavesTheAllocation(t *testing.T) {
+	// A 1:1 call bound to del2c01/bom2c03/maa3c03 that became a group call whose
+	// allocation lists del2c02 first and still carries bom2c03 (live capture,
+	// 2026-10-03).
+	bound := []relayEndpoint{
+		{relayName: "del2c01", addresses: []relayAddress{{ipv4: "163.70.146.133", port: 3478}}},
+		{relayName: "bom2c03", addresses: []relayAddress{{ipv4: "57.144.125.57", port: 3478}}},
+		{relayName: "maa3c03", addresses: []relayAddress{{ipv4: "57.144.213.57", port: 3478}}},
+	}
+	group := &relayData{endpoints: []relayEndpoint{
+		{relayName: "del2c02", tokenID: 1, addresses: []relayAddress{{ipv4: "163.70.145.133", port: 3478}}},
+		{relayName: "bom2c03", tokenID: 0, addresses: []relayAddress{{ipv4: "57.144.125.57", port: 3478}}},
+	}}
+	target, alreadyBound, ok := selectGroupRelayEndpoint(bound, group, false)
+	if !ok || !alreadyBound || target.relayName != "bom2c03" || target.tokenID != 0 {
+		t.Fatalf("target = %+v alreadyBound=%v ok=%v, want the still-bound bom2c03 with the group token", target, alreadyBound, ok)
+	}
+
+	group.endpoints = group.endpoints[:1]
+	target, alreadyBound, ok = selectGroupRelayEndpoint(bound, group, false)
+	if !ok || alreadyBound || target.relayName != "del2c02" || target.addresses[0].ipv4 != "163.70.145.133" {
+		t.Fatalf("target = %+v alreadyBound=%v ok=%v, want a redial to del2c02", target, alreadyBound, ok)
+	}
+
+	// Same relay name on a different address is a different socket.
+	group.endpoints = []relayEndpoint{
+		{relayName: "del2c01", addresses: []relayAddress{{ipv4: "163.70.146.134", port: 3478}}},
+	}
+	if target, alreadyBound, ok = selectGroupRelayEndpoint(bound, group, false); !ok || alreadyBound {
+		t.Fatalf("target = %+v alreadyBound=%v ok=%v, want a redial for the moved address", target, alreadyBound, ok)
+	}
+}
+
+func TestGroupRelayAllocateStatePendingTracksTheRelayTransaction(t *testing.T) {
+	key := bytes.Repeat([]byte{0x24}, 16)
+	state := newGroupRelayAllocateStateWithHBHFEC([]byte{0x00}, key, [2]uint32{1, 2})
+	if state.HasGroup() {
+		t.Fatal("a fresh state already claims a group allocation")
+	}
+	relayUpdate := &groupCallRelay{
+		TransactionID: 1, Key: key, Tokens: [][]byte{bytes.Repeat([]byte{0x42}, 174)},
+		Endpoints: []groupCallRelayEndpoint{{RelayName: "del2c02", TokenID: 0}},
+	}
+	if state.Pending(nil) || !state.Pending(relayUpdate) {
+		t.Fatal("the first group relay must be pending, and no relay must not be")
+	}
+	endpoint := &relayEndpoint{
+		relayName: "del2c02",
+		addresses: []relayAddress{{ipv4: "163.70.145.133", port: 3478}},
+	}
+	if _, err := state.ApplyWithSubscriptions(
+		endpoint, relayUpdate, [9]uint32{}, 10, nil, [12]byte{}, func([]byte) error { return nil },
+	); err != nil {
+		t.Fatalf("ApplyWithSubscriptions: %v", err)
+	}
+	if !state.HasGroup() || state.Pending(relayUpdate) {
+		t.Fatal("an applied relay transaction is still pending")
+	}
+	relayUpdate.TransactionID = 2
+	if !state.Pending(relayUpdate) {
+		t.Fatal("a newer relay transaction must be pending")
+	}
+}

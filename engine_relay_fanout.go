@@ -2,6 +2,7 @@ package meowcaller
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/purpshell/meowcaller/relay"
@@ -181,6 +182,52 @@ func (f *relayFanout) PrimarySend(data []byte) (int, error) {
 	primary := f.chans[0]
 	f.mu.Unlock()
 	return primary.Send(data)
+}
+
+// Rebind collapses the fanout onto one relay and retires every other
+// connection. With a replacement channel that channel becomes the relay;
+// without one the already-connected relay called name is kept. A group
+// allocation lives on exactly one relay, and the server may hand out a relay
+// set the 1:1 call was never bound to.
+func (f *relayFanout) Rebind(name string, replacement *relay.RelayMediaChannel) error {
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/d9f78b806f1f4ca80c8008caa5846e5d542c2c55/wacore/src/voip/driver.rs#L838-L861
+	f.mu.Lock()
+	if f.closed {
+		f.mu.Unlock()
+		if replacement != nil {
+			_ = replacement.Close()
+		}
+		return errFanoutClosed
+	}
+	keep := replacement
+	var retired []*relay.RelayMediaChannel
+	for i, ch := range f.chans {
+		if keep == nil && i < len(f.names) && f.names[i] == name {
+			keep = ch
+			continue
+		}
+		retired = append(retired, ch)
+	}
+	if keep == nil {
+		f.mu.Unlock()
+		return fmt.Errorf("meowcaller: relay %s is not connected", name)
+	}
+	if replacement != nil {
+		f.live++
+	}
+	// Fresh slices: Send and ResendAllocates iterate snapshots taken under mu.
+	f.chans = []*relay.RelayMediaChannel{keep}
+	f.allocs = [][]byte{nil}
+	f.names = []string{name}
+	f.mu.Unlock()
+
+	if replacement != nil {
+		go f.readLoop(replacement)
+	}
+	for _, ch := range retired {
+		_ = ch.Close()
+	}
+	return nil
 }
 
 func (f *relayFanout) Close() error {

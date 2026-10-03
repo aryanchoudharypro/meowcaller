@@ -37,6 +37,23 @@ func (s *groupRelayAllocateState) Current() []byte {
 	return bytes.Clone(s.packet)
 }
 
+// HasGroup reports whether a group allocation has replaced the 1:1 one.
+func (s *groupRelayAllocateState) HasGroup() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.hasGroup
+}
+
+// Pending reports whether relayUpdate carries an allocation not yet sent.
+func (s *groupRelayAllocateState) Pending(relayUpdate *groupCallRelay) bool {
+	if relayUpdate == nil {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return !s.hasGroup || relayUpdate.TransactionID > s.transactionID
+}
+
 func (s *groupRelayAllocateState) SendCurrent(send func([]byte) error) error {
 	// Source of truth: https://github.com/purpshell/meowcaller/blob/bcfb7f0c076b131422c22f024dfff080448e70f4/datasheets/group-media-relay-refresh.md#L59-L67
 	if send == nil {
@@ -174,6 +191,53 @@ func groupRelayData(update groupCallUpdate, inbound bool) (*relayData, error) {
 		return nil, fmt.Errorf("meowcaller: group relay has no usable endpoint")
 	}
 	return rd, nil
+}
+
+// selectGroupRelayEndpoint picks the relay a group allocation goes to. A relay
+// the call is already bound to stays in use when the allocation still lists it
+// at the same address; otherwise the allocation's own preferred endpoint wins
+// and the transport has to be redialed there first. The returned endpoint
+// always carries the group allocation's token index.
+func selectGroupRelayEndpoint(bound []relayEndpoint, groupRelay *relayData, inbound bool) (target relayEndpoint, alreadyBound bool, ok bool) {
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/d9f78b806f1f4ca80c8008caa5846e5d542c2c55/wacore/src/voip/engine.rs#L1564-L1578
+	if groupRelay == nil {
+		return relayEndpoint{}, false, false
+	}
+	for _, have := range bound {
+		if len(have.addresses) == 0 {
+			continue
+		}
+		for _, candidate := range groupRelay.endpoints {
+			if len(candidate.addresses) != 0 && candidate.relayName == have.relayName &&
+				candidate.isFNA == have.isFNA && candidate.addresses[0] == have.addresses[0] {
+				return candidate, true, true
+			}
+		}
+	}
+	preferred := getMediaRelayEndpoint(groupRelay, inbound)
+	if preferred == nil || len(preferred.addresses) == 0 {
+		return relayEndpoint{}, false, false
+	}
+	return *preferred, false, true
+}
+
+// boundRelayEndpoints lists the offered endpoints behind the fanout's connected
+// relays, primary first.
+func boundRelayEndpoints(rd *relayData, names []string, inbound bool) []relayEndpoint {
+	var bound []relayEndpoint
+	if primary := getMediaRelayEndpoint(rd, inbound); primary != nil && len(names) > 0 && primary.relayName == names[0] {
+		bound = append(bound, *primary)
+		names = names[1:]
+	}
+	for _, name := range names {
+		for _, endpoint := range rd.endpoints {
+			if endpoint.relayName == name && len(endpoint.addresses) != 0 {
+				bound = append(bound, endpoint)
+				break
+			}
+		}
+	}
+	return bound
 }
 
 func connectedRemoteParticipantPIDs(update groupCallUpdate, selfID string) []uint32 {

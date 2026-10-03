@@ -168,38 +168,10 @@ func (e *engine) connectAndAllocateAll(ctx context.Context, rd *relayData, strea
 // NOT VALIDATED: live-relay only.
 func (e *engine) connectOneRelay(ctx context.Context, rd *relayData, ep *relayEndpoint, streamSsrcs [9]uint32) (*relay.RelayMediaChannel, []byte, error) {
 	log := e.c.log
-	if ep == nil || len(ep.addresses) == 0 {
-		return nil, nil, fmt.Errorf("relay has no usable endpoint")
+	ch, err := e.dialRelay(ctx, ep)
+	if err != nil {
+		return nil, nil, err
 	}
-	addr := &net.UDPAddr{IP: net.ParseIP(ep.addresses[0].ipv4), Port: int(ep.addresses[0].port)}
-	log.Info().Str("relay_name", ep.relayName).Str("addr", addr.String()).Msg("connecting media transport to relay")
-	e.c.diag.Emit("relay", map[string]any{
-		"event": "endpoint", "relay_name": ep.relayName,
-		"ipv4": ep.addresses[0].ipv4, "port": ep.addresses[0].port, "token_id": ep.tokenID,
-	})
-
-	type result struct {
-		ch  *relay.RelayMediaChannel
-		err error
-	}
-	done := make(chan result, 1)
-	go func() {
-		ch, err := relay.ConnectRelayMedia(addr, relay.WithLogger(log))
-		done <- result{ch, err}
-	}()
-	var ch *relay.RelayMediaChannel
-	select {
-	case r := <-done:
-		if r.err != nil {
-			return nil, nil, fmt.Errorf("relay connect: %w", r.err)
-		}
-		ch = r.ch
-	case <-time.After(12 * time.Second):
-		return nil, nil, fmt.Errorf("relay connect timed out (DTLS didn't complete)")
-	case <-ctx.Done():
-		return nil, nil, ctx.Err()
-	}
-	log.Info().Str("relay_name", ep.relayName).Msg("relay DataChannel open")
 
 	if int(ep.tokenID) >= len(rd.relayTokens) || rd.relayTokens[ep.tokenID] == nil {
 		ch.Close()
@@ -233,6 +205,84 @@ func (e *engine) connectOneRelay(ctx context.Context, rd *relayData, ep *relayEn
 		"stream_ssrcs": streamSsrcs,
 	})
 	return ch, allocate, nil
+}
+
+// dialRelay opens the relay DataChannel for a single endpoint without
+// allocating on it.
+//
+// NOT VALIDATED: live-relay only.
+func (e *engine) dialRelay(ctx context.Context, ep *relayEndpoint) (*relay.RelayMediaChannel, error) {
+	log := e.c.log
+	if ep == nil || len(ep.addresses) == 0 {
+		return nil, fmt.Errorf("relay has no usable endpoint")
+	}
+	addr := &net.UDPAddr{IP: net.ParseIP(ep.addresses[0].ipv4), Port: int(ep.addresses[0].port)}
+	log.Info().Str("relay_name", ep.relayName).Str("addr", addr.String()).Msg("connecting media transport to relay")
+	e.c.diag.Emit("relay", map[string]any{
+		"event": "endpoint", "relay_name": ep.relayName,
+		"ipv4": ep.addresses[0].ipv4, "port": ep.addresses[0].port, "token_id": ep.tokenID,
+	})
+
+	type result struct {
+		ch  *relay.RelayMediaChannel
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		ch, err := relay.ConnectRelayMedia(addr, relay.WithLogger(log))
+		done <- result{ch, err}
+	}()
+	var ch *relay.RelayMediaChannel
+	select {
+	case r := <-done:
+		if r.err != nil {
+			return nil, fmt.Errorf("relay connect: %w", r.err)
+		}
+		ch = r.ch
+	case <-time.After(12 * time.Second):
+		return nil, fmt.Errorf("relay connect timed out (DTLS didn't complete)")
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	log.Info().Str("relay_name", ep.relayName).Msg("relay DataChannel open")
+	return ch, nil
+}
+
+// rebindGroupRelay moves the call's transport onto the relay a group
+// allocation names, dialing it when the call was never bound there, and
+// returns that endpoint as the call's only bound relay. A 1:1 call that grows
+// into a group call is handed a fresh relay set with its own tokens and key;
+// the relays it fanned out to as a 1:1 call may not be in it at all.
+//
+// NOT VALIDATED: live-relay only.
+func (e *engine) rebindGroupRelay(ctx context.Context, ch *relayFanout, bound []relayEndpoint, update groupCallUpdate, inbound bool) ([]relayEndpoint, error) {
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/d9f78b806f1f4ca80c8008caa5846e5d542c2c55/wacore/src/voip/engine.rs#L1557-L1620
+	groupRelay, err := groupRelayData(update, inbound)
+	if err != nil {
+		return bound, err
+	}
+	target, alreadyBound, ok := selectGroupRelayEndpoint(bound, groupRelay, inbound)
+	if !ok {
+		return bound, fmt.Errorf("meowcaller: group relay has no usable endpoint")
+	}
+	if alreadyBound {
+		if len(bound) > 1 {
+			if err := ch.Rebind(target.relayName, nil); err != nil {
+				return bound, err
+			}
+		}
+		return []relayEndpoint{target}, nil
+	}
+	e.c.log.Info().Str("call_id", update.CallID).Str("relay_name", target.relayName).
+		Msg("group allocation moved to a relay this call is not bound to; redialing")
+	replacement, err := e.dialRelay(ctx, &target)
+	if err != nil {
+		return bound, err
+	}
+	if err := ch.Rebind(target.relayName, replacement); err != nil {
+		return bound, err
+	}
+	return []relayEndpoint{target}, nil
 }
 
 // runMedia runs the per-frame media loop over the relay DataChannel: the Player's frames
@@ -568,6 +618,8 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 		t := time.NewTicker(time.Second)
 		defer t.Stop()
 		var tickCount uint64
+		// Relays this call is connected to, primary first.
+		boundRelays := boundRelayEndpoints(rd, ch.names, inbound)
 		for {
 			select {
 			case <-ctx.Done():
@@ -593,12 +645,17 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 					update = &cloned
 				}
 				e.mu.Unlock()
-				if update != nil && update.Relay != nil {
+				if update != nil && allocateState.Pending(update.Relay) {
 					var relayTx [12]byte
-					if _, err := rand.Read(relayTx[:]); err == nil {
-						endpoint := getMediaRelayEndpoint(rd, inbound)
+					_, err := rand.Read(relayTx[:])
+					if err == nil {
+						// The allocation may name a relay this call never bound to
+						// (a 1:1 call that grew into a group call); move there first.
+						boundRelays, err = e.rebindGroupRelay(ctx, ch, boundRelays, *update, inbound)
+					}
+					if err == nil {
 						allocateSent, err = allocateState.ApplyWithSubscriptions(
-							endpoint,
+							&boundRelays[0],
 							update.Relay,
 							streamSsrcs,
 							appDataSelfSsrc,
@@ -611,9 +668,9 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 								return sendErr
 							},
 						)
-						if err != nil {
-							log.Warn().Err(err).Str("call_id", callID).Msg("failed to refresh group relay allocation")
-						}
+					}
+					if err != nil {
+						log.Warn().Err(err).Str("call_id", callID).Msg("failed to refresh group relay allocation")
 					}
 				}
 				activeParticipantIDs := audioReceivers.ActiveParticipantIDs()
@@ -629,7 +686,9 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 				}
 			}
 			if !allocateSent {
-				if isGroup {
+				// Once a group allocation is in place it is the only valid one,
+				// also for a call that started 1:1.
+				if isGroup || allocateState.HasGroup() {
 					if err := allocateState.SendCurrent(func(packet []byte) error {
 						_, sendErr := ch.PrimarySend(packet)
 						return sendErr
