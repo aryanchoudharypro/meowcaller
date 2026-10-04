@@ -28,8 +28,11 @@ func (e *engine) onUnknownCallEvent(node *waBinary.Node) {
 			return
 		}
 		update := groupCallUpdateFromSignaling(*parsed)
-		if e.applyGroupUpdate(update) && update.RekeyRequested {
-			if fanoutErr := e.distributeRequestedGroupEpoch(context.Background(), update); fanoutErr != nil {
+		// Only a fresh committed roster requests an epoch: a relay-only adoption
+		// must not replay its (older) carrying roster's rekey request. The fan-out
+		// goes to the committed, PID-stabilized participants.
+		if committed, outcome := e.applyGroupUpdate(update); outcome == groupUpdateApplied && update.RekeyRequested {
+			if fanoutErr := e.distributeRequestedGroupEpoch(context.Background(), committed); fanoutErr != nil {
 				e.c.log.Warn().Err(fanoutErr).Str("call_id", update.CallID).Msg("group rekey fanout failed")
 			}
 		}
@@ -149,10 +152,13 @@ func callControlParticipant(envelope *signaling.CallControlEnvelope) types.JID {
 	return envelope.From.ToNonAD()
 }
 
-func (e *engine) applyGroupUpdate(update groupCallUpdate) bool {
+// applyGroupUpdate commits one group_update against the call's snapshot and
+// returns the committed snapshot with what the update did to it. See
+// mergeGroupUpdate for how the roster and the relay allocation advance.
+func (e *engine) applyGroupUpdate(update groupCallUpdate) (groupCallUpdate, groupUpdateApply) {
 	// Source of truth: https://github.com/purpshell/meowcaller/blob/65b1dbf33f365db7392e438c3e3bf3651decb6cf/datasheets/group-media-receive.md#L83-L100
 	if update.CallID == "" {
-		return false
+		return groupCallUpdate{}, groupUpdateStale
 	}
 	e.mu.Lock()
 	m := e.calls[update.CallID]
@@ -162,20 +168,23 @@ func (e *engine) applyGroupUpdate(update groupCallUpdate) bool {
 			Str("call_id", update.CallID).
 			Uint32("transaction_id", update.TransactionID).
 			Msg("dropping group update for unknown or ended call")
-		return false
+		return groupCallUpdate{}, groupUpdateStale
 	}
-	if m.groupUpdate != nil && update.TransactionID <= m.groupUpdate.TransactionID {
+	stored, outcome := mergeGroupUpdate(m.groupUpdate, update)
+	if outcome == groupUpdateStale {
 		e.mu.Unlock()
-		return false
+		return groupCallUpdate{}, groupUpdateStale
 	}
-	stored := cloneGroupCallUpdate(update)
+	if outcome == groupUpdateRelayOnly {
+		return e.commitGroupRelayLocked(m, stored, update), groupUpdateRelayOnly
+	}
 	receivers := m.groupReceivers
 	e.mu.Unlock()
 
 	if receivers != nil {
 		if err := receivers.ApplyGroupUpdate(stored); err != nil {
 			e.c.log.Warn().Err(err).Str("call_id", update.CallID).Msg("apply group media roster failed")
-			return false
+			return groupCallUpdate{}, groupUpdateStale
 		}
 	}
 
@@ -186,11 +195,16 @@ func (e *engine) applyGroupUpdate(update groupCallUpdate) bool {
 		if receivers != nil {
 			receivers.clear()
 		}
-		return false
+		return groupCallUpdate{}, groupUpdateStale
 	}
-	if m.groupUpdate != nil && update.TransactionID <= m.groupUpdate.TransactionID {
+	// The snapshot may have moved while the media roster was applied unlocked.
+	stored, outcome = mergeGroupUpdate(m.groupUpdate, update)
+	if outcome == groupUpdateStale {
 		e.mu.Unlock()
-		return false
+		return groupCallUpdate{}, groupUpdateStale
+	}
+	if outcome == groupUpdateRelayOnly {
+		return e.commitGroupRelayLocked(m, stored, update), groupUpdateRelayOnly
 	}
 	m.group = true
 	m.groupUpdate = &stored
@@ -223,7 +237,26 @@ func (e *engine) applyGroupUpdate(update groupCallUpdate) bool {
 		call.setGroupState(groupCallStateFromUpdate(stored))
 	}
 	e.maybeStartMedia(update.CallID)
-	return true
+	return cloneGroupCallUpdate(stored), groupUpdateApplied
+}
+
+// commitGroupRelayLocked stores a snapshot whose only change is its relay
+// allocation, releasing e.mu. The roster the allocation arrived on is obsolete,
+// so nothing a roster drives runs: no membership change, no waiting-room
+// admission, no rekey. Media picks the allocation up on its next keepalive
+// tick, or starts now if the relay was all it was waiting for.
+func (e *engine) commitGroupRelayLocked(m *engineCall, stored, update groupCallUpdate) groupCallUpdate {
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/e0225b3a/wacore/src/voip/engine.rs#L1507-L1511
+	m.groupUpdate = &stored
+	e.mu.Unlock()
+	e.c.log.Debug().
+		Str("call_id", update.CallID).
+		Uint32("transaction_id", stored.TransactionID).
+		Uint32("carrying_transaction_id", update.TransactionID).
+		Uint32("relay_transaction_id", stored.Relay.TransactionID).
+		Msg("group relay allocation adopted from an older roster")
+	e.maybeStartMedia(update.CallID)
+	return cloneGroupCallUpdate(stored)
 }
 
 func (e *engine) ingestGroupEpoch(ctx context.Context, envelope *signaling.CallControlEnvelope) error {

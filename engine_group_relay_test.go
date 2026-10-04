@@ -182,7 +182,7 @@ func TestGroupRelayAllocateStatePendingTracksTheRelayTransaction(t *testing.T) {
 		TransactionID: 1, Key: key, Tokens: [][]byte{bytes.Repeat([]byte{0x42}, 174)},
 		Endpoints: []groupCallRelayEndpoint{{RelayName: "del2c02", TokenID: 0}},
 	}
-	if state.Pending(nil) || !state.Pending(relayUpdate) {
+	if state.Pending(nil, nil) || !state.Pending(relayUpdate, nil) {
 		t.Fatal("the first group relay must be pending, and no relay must not be")
 	}
 	endpoint := &relayEndpoint{
@@ -194,11 +194,66 @@ func TestGroupRelayAllocateStatePendingTracksTheRelayTransaction(t *testing.T) {
 	); err != nil {
 		t.Fatalf("ApplyWithSubscriptions: %v", err)
 	}
-	if !state.HasGroup() || state.Pending(relayUpdate) {
+	if !state.HasGroup() || state.Pending(relayUpdate, nil) {
 		t.Fatal("an applied relay transaction is still pending")
 	}
 	relayUpdate.TransactionID = 2
-	if !state.Pending(relayUpdate) {
+	if !state.Pending(relayUpdate, nil) {
 		t.Fatal("a newer relay transaction must be pending")
+	}
+}
+
+func TestGroupRelayAllocateStateResendsWhenTheSubscriptionChanges(t *testing.T) {
+	key := bytes.Repeat([]byte{0x24}, 16)
+	token := bytes.Repeat([]byte{0x42}, 174)
+	state := newGroupRelayAllocateStateWithHBHFEC([]byte{0x00}, key, [2]uint32{1, 2})
+	relayUpdate := &groupCallRelay{
+		TransactionID: 1, Key: key, Tokens: [][]byte{token},
+		Endpoints: []groupCallRelayEndpoint{{RelayName: "del2c02", TokenID: 0}},
+	}
+	endpoint := &relayEndpoint{
+		relayName: "del2c02",
+		addresses: []relayAddress{{ipv4: "163.70.145.133", port: 3478}},
+	}
+	streamSSRCs := [9]uint32{1, 2, 3, 4, 5, 6, 7, 8, 9}
+	var sent [][]byte
+	apply := func(pids []uint32) bool {
+		t.Helper()
+		changed, err := state.ApplyWithSubscriptions(
+			endpoint, relayUpdate, streamSSRCs, 10, pids, [12]byte{7},
+			func(packet []byte) error {
+				sent = append(sent, bytes.Clone(packet))
+				return nil
+			},
+		)
+		if err != nil {
+			t.Fatalf("ApplyWithSubscriptions: %v", err)
+		}
+		return changed
+	}
+	if !apply([]uint32{0}) {
+		t.Fatal("the first group allocation was not sent")
+	}
+	// Same relay transaction, same subscription: nothing to do.
+	if state.Pending(relayUpdate, []uint32{0}) || apply([]uint32{0, 0}) {
+		t.Fatal("an unchanged subscription re-sent the allocation")
+	}
+	// A third participant joined on a roster-only update: the relay transaction
+	// did not move, but the allocation has to subscribe to the new pid.
+	if !state.Pending(relayUpdate, []uint32{3, 0}) {
+		t.Fatal("a new participant pid must make the allocation pending")
+	}
+	if !apply([]uint32{3, 0}) || len(sent) != 2 {
+		t.Fatalf("a changed subscription sent %d allocations, want 2", len(sent))
+	}
+	endpointXOR, _ := stun.EncodeXorRelayEndpoint("163.70.145.133", 3478)
+	want := stun.BuildWasmStunAllocateRequestWithGroupSubscriptionsAndHBHFEC(
+		[12]byte{7}, token, endpointXOR, streamSSRCs, 10, [2]uint32{1, 2}, []uint32{0, 3}, key,
+	)
+	if !bytes.Equal(sent[1], want) {
+		t.Fatal("the refreshed allocation does not carry both participant pids")
+	}
+	if state.Pending(relayUpdate, []uint32{0, 3}) {
+		t.Fatal("the refreshed subscription is still pending")
 	}
 }

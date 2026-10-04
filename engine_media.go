@@ -645,7 +645,11 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 					update = &cloned
 				}
 				e.mu.Unlock()
-				if update != nil && allocateState.Pending(update.Relay) {
+				var subscribedPIDs []uint32
+				if update != nil {
+					subscribedPIDs = connectedRemoteParticipantPIDs(*update, audioReceivers.selfID)
+				}
+				if update != nil && allocateState.Pending(update.Relay, subscribedPIDs) {
 					var relayTx [12]byte
 					_, err := rand.Read(relayTx[:])
 					if err == nil {
@@ -659,7 +663,7 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 							update.Relay,
 							streamSsrcs,
 							appDataSelfSsrc,
-							connectedRemoteParticipantPIDs(*update, audioReceivers.selfID),
+							subscribedPIDs,
 							relayTx,
 							func(packet []byte) error {
 								// Group allocations are relay-specific state; they stay
@@ -674,6 +678,7 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 					} else if allocateSent {
 						log.Info().Str("call_id", callID).Str("relay_name", boundRelays[0].relayName).
 							Uint32("relay_transaction_id", update.Relay.TransactionID).
+							Uints32("subscribed_pids", sortedUniquePIDs(subscribedPIDs)).
 							Msg("sent group relay allocation")
 					}
 				}

@@ -214,12 +214,12 @@ func TestRawGroupControlSendsTypedAckWithoutUpstreamDoubleHandling(t *testing.T)
 func TestLateGroupUpdateDoesNotRecreateEndedCall(t *testing.T) {
 	eng, _, creator := testGroupEngine("GROUP")
 	eng.finishCall("GROUP", "test")
-	applied := eng.applyGroupUpdate(groupCallUpdate{
+	_, outcome := eng.applyGroupUpdate(groupCallUpdate{
 		CallID:        "GROUP",
 		CallCreator:   creator,
 		TransactionID: 1,
 	})
-	if applied {
+	if outcome != groupUpdateStale {
 		t.Fatal("late group update was applied")
 	}
 	eng.mu.Lock()

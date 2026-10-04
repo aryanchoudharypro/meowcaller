@@ -3,6 +3,7 @@ package meowcaller
 import (
 	"bytes"
 	"fmt"
+	"slices"
 	"sync"
 
 	"github.com/purpshell/meowcaller/rtp"
@@ -15,7 +16,9 @@ type groupRelayAllocateState struct {
 	key           []byte
 	transactionID uint32
 	hasGroup      bool
-	hbhFECSSRCs   [2]uint32
+	// pids is the receiver subscription the current allocation carries.
+	pids        []uint32
+	hbhFECSSRCs [2]uint32
 }
 
 func newGroupRelayAllocateStateWithHBHFEC(
@@ -44,14 +47,19 @@ func (s *groupRelayAllocateState) HasGroup() bool {
 	return s.hasGroup
 }
 
-// Pending reports whether relayUpdate carries an allocation not yet sent.
-func (s *groupRelayAllocateState) Pending(relayUpdate *groupCallRelay) bool {
+// Pending reports whether an allocation has to be sent: relayUpdate carries one
+// not yet sent, or the receiver subscription changed under the current one. The
+// relay forwards only the participants the allocation subscribed to, so someone
+// who joins on a roster-only update stays unheard until it is sent again.
+func (s *groupRelayAllocateState) Pending(relayUpdate *groupCallRelay, participantPIDs []uint32) bool {
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/e0225b3a/wacore/src/voip/engine.rs#L1582-L1597
 	if relayUpdate == nil {
 		return false
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return !s.hasGroup || relayUpdate.TransactionID > s.transactionID
+	return !s.hasGroup || relayUpdate.TransactionID > s.transactionID ||
+		!slices.Equal(s.pids, sortedUniquePIDs(participantPIDs))
 }
 
 func (s *groupRelayAllocateState) SendCurrent(send func([]byte) error) error {
@@ -77,9 +85,10 @@ func (s *groupRelayAllocateState) ApplyWithSubscriptions(
 	if relayUpdate == nil {
 		return false, nil
 	}
+	participantPIDs = sortedUniquePIDs(participantPIDs)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.hasGroup && relayUpdate.TransactionID <= s.transactionID {
+	if s.hasGroup && relayUpdate.TransactionID <= s.transactionID && slices.Equal(s.pids, participantPIDs) {
 		return false, nil
 	}
 	if endpoint == nil || endpoint.relayName == "" || len(endpoint.addresses) == 0 ||
@@ -126,7 +135,10 @@ func (s *groupRelayAllocateState) ApplyWithSubscriptions(
 	}
 	s.packet = append(s.packet[:0], packet...)
 	s.key = append(s.key[:0], relayUpdate.Key...)
-	s.transactionID = relayUpdate.TransactionID
+	// A subscription refresh re-sends the held allocation, which may be older
+	// than one already recorded only if the caller passed a stale relay.
+	s.transactionID = max(s.transactionID, relayUpdate.TransactionID)
+	s.pids = participantPIDs
 	s.hasGroup = true
 	return true, nil
 }
