@@ -292,6 +292,13 @@ func (d *RangeDecoder) Tell() int32 {
 	return d.nbitsTotal - ilog(d.rng)
 }
 
+// Storage is the bytes the payload actually holds. Paired with Tell this is how
+// a caller checks that a stream ended where it claimed to: reads past either end
+// silently return zero, so an impossible length is only visible by comparing.
+func (d *RangeDecoder) Storage() uint32 {
+	return d.storage
+}
+
 // RangeEncoder is the Opus/CELT range entropy encoder, the exact inverse of
 // RangeDecoder. Range-coded symbols are written toward the front of the buffer,
 // raw bits toward the back; Done flushes and merges them.
