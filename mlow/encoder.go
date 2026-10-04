@@ -301,14 +301,23 @@ type SmplInternalParams struct {
 
 // SmplFrameParams is the analyzed parameter set for one 60 ms MLow frame.
 type SmplFrameParams struct {
-	TOC      byte
-	Config   int
-	Internal [3]SmplInternalParams
+	TOC    byte
+	Config int
+	// CodedAsActiveVoice is whether the packet is coded as active voice
+	// (SmplTOC.Active). Two LSF symbols are on the wire only then, so the writer
+	// has to agree with the reader about it.
+	CodedAsActiveVoice bool
+	Internal           [3]SmplInternalParams
 }
 
 // encodeSmplLsf is the inverse of DecodeSmplLsf: mirror the selector/grid/16-residual/extra
 // writes, mutating st identically (so the cross-internal-frame predictor stays in sync).
-func encodeSmplLsf(enc *RangeEncoder, t *SmplTables, st *SmplLsfState, config, intf int, lsf *SmplLsfParams) {
+//
+// The voicing selector and the interpolation index are on the wire only for a
+// frame coded as active voice, exactly as DecodeSmplLsf gates its reads: writing
+// them for an inactive frame would leave two symbols the reader never consumes
+// and desync everything after.
+func encodeSmplLsf(enc *RangeEncoder, t *SmplTables, st *SmplLsfState, config, intf int, lsf *SmplLsfParams, codedAsActiveVoice bool) {
 	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/ed12f359a086b28e807ba236f0977af1000859fe/wacore/src/voip/mlow/encode.rs#L100-L151
 	sel := 0
 	if intf != 0 {
@@ -319,7 +328,9 @@ func encodeSmplLsf(enc *RangeEncoder, t *SmplTables, st *SmplLsfState, config, i
 		}
 	}
 	stage1 := lsf.Stage1
-	enc.EncodeCDF(stage1, t.LsfSel[sel])
+	if codedAsActiveVoice {
+		enc.EncodeCDF(stage1, t.LsfSel[sel])
+	}
 
 	m := intf != 0 && stage1 == st.PrevStage1
 	if !m {
@@ -351,7 +362,9 @@ func encodeSmplLsf(enc *RangeEncoder, t *SmplTables, st *SmplLsfState, config, i
 	for k := 0; k < 16; k++ {
 		enc.EncodeCDF(lsf.Stage2[k], st2[k])
 	}
-	enc.EncodeCDF(lsf.Extra, t.LsfExtra)
+	if codedAsActiveVoice {
+		enc.EncodeCDF(lsf.Extra, t.LsfExtra)
+	}
 }
 
 // encodeSmplPulses is the inverse of DecodeSmplPulses (config=0 NB count, p3=4):
@@ -571,7 +584,17 @@ func encodeSmplPitch(enc *RangeEncoder, _ *SmplMem, st *SmplLsfState, p2, p3, p6
 func EncodeSmplFrame(fp *SmplFrameParams, log ...zerolog.Logger) ([]byte, error) {
 	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/ed12f359a086b28e807ba236f0977af1000859fe/wacore/src/voip/mlow/encode.rs#L61-L102
 	lg := pickLog(log)
-	const p2, p3, p4 = int32(320), int32(4), int32(1)
+	// p4 + s1 is the frame type the pulse geometry is indexed by (0 background
+	// noise, 1 unvoiced, 2 voiced), so p4 is the packet's activity flag, not a
+	// constant: a frame coded inactive has half the pulse capacity, and
+	// DecodeSmplPulses reads it from the TOC. Writing 1 for an inactive frame
+	// encodes the splits under a geometry the reader does not use.
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/99a9a118/wacore/src/voip/mlow/encode.rs#L129-L137
+	const p2, p3 = int32(320), int32(4)
+	p4 := int32(0)
+	if fp.CodedAsActiveVoice {
+		p4 = 1
+	}
 	p6 := int32(fp.Config)
 	lg.Trace().Uint8("toc_byte", fp.TOC).Int("config", fp.Config).Int("internal_frames", 3).Msg("encode frame")
 	tbl := LoadSmplTables()
@@ -582,7 +605,7 @@ func EncodeSmplFrame(fp *SmplFrameParams, log ...zerolog.Logger) ([]byte, error)
 		ip := &fp.Internal[f]
 		lg.Trace().Int("intf", f).Bool("voiced", ip.Lsf.Stage1 == 1).Int32("stage1", ip.Lsf.Stage1).
 			Int32("total_pulses", ip.Pulses.Total).Bool("has_pitch", ip.HasPitch).Msg("encode internal frame params")
-		encodeSmplLsf(enc, tbl, &st, fp.Config, f, &ip.Lsf)
+		encodeSmplLsf(enc, tbl, &st, fp.Config, f, &ip.Lsf, fp.CodedAsActiveVoice)
 		encodeSmplPulses(enc, mem, p2, p3, p4, p6, ip.Lsf.Stage1, &ip.Pulses)
 		if ip.Lsf.Stage1 == 1 {
 			encodeSmplPitch(enc, mem, &st, p2, p3, p6, ip.Pulses.Subfr, &ip.Pitch)

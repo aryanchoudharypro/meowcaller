@@ -154,8 +154,14 @@ const (
 
 // VadPacketResult is the VAD output for one 60 ms packet.
 type VadPacketResult struct {
-	VadResults         [3]float32
+	VadResults [3]float32
+	// CodedAsActiveVoice: any internal frame active OR within the DTX hangover.
+	// It gates the two LSF symbols and equals SmplTOC.Active (vad || bit1).
 	CodedAsActiveVoice bool
+	// SpeechDetected: any internal frame active before the hangover promotion,
+	// the TOC's VAD bit itself. A packet that is only active through the
+	// hangover sets bit 1 instead (the reference's 0x12).
+	SpeechDetected bool
 }
 
 // NewSmplVadState initializes the VAD (smpl_VAD_Init).
@@ -376,9 +382,11 @@ func (s *SmplVadState) ProcessPacket(pcmI16 []int16, framelen int) VadPacketResu
 	}
 
 	codedAsActiveVoice := false
+	speechDetected := false
 	for i := range vt {
 		if vt[i] == vadActive {
 			s.remainingDtxHangover = s.hangoverMs
+			speechDetected = true
 		} else if s.remainingDtxHangover > 0 {
 			vt[i] = vadHangover
 			s.remainingDtxHangover -= packetMs / framesPerPacket
@@ -388,5 +396,5 @@ func (s *SmplVadState) ProcessPacket(pcmI16 []int16, framelen int) VadPacketResu
 		}
 	}
 
-	return VadPacketResult{VadResults: vadResults, CodedAsActiveVoice: codedAsActiveVoice}
+	return VadPacketResult{VadResults: vadResults, CodedAsActiveVoice: codedAsActiveVoice, SpeechDetected: speechDetected}
 }

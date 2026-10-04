@@ -20,7 +20,7 @@ func captureUnvoicedFrame(fb []byte) *SmplFrameParams {
 	mem := LoadSmplMem()
 	dec := NewRangeDecoder(fb[1:])
 	var st SmplLsfState
-	fp := &SmplFrameParams{TOC: fb[0], Config: config}
+	fp := &SmplFrameParams{TOC: fb[0], Config: config, CodedAsActiveVoice: true}
 	for f := 0; f < 3; f++ {
 		lsf := DecodeSmplLsf(dec, tbl, &st, config, f, true)
 		pul := DecodeSmplPulses(dec, mem, SmplIntfLen, 4, 1, int32(config), lsf.Stage1)

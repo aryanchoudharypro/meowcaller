@@ -235,7 +235,21 @@ func smplAnalyzeFrameSt(es *SmplEncoderState, pcm []float32) SmplFrameParams {
 	es.lpcHist = append([]float32(nil), hp[need-smplLpcHistLen:need]...)
 	es.prevLsfq = prevLsfq
 	es.prevVoiced = prevVoiced
-	return SmplFrameParams{TOC: 0x50, Config: 0, Internal: internal}
+	// 16 kHz, 60 ms, config 0, no SID: bit 4 of the frame-size index, plus the
+	// activity bits. Speech detected -> VAD bit (0x50). Only the DTX hangover keeps
+	// it coded active -> bit 1 instead (0x12). Neither -> coded inactive (0x10), the
+	// shape the reference emits over silence with DTX off, and the one a receiver
+	// can tell apart from speech.
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/99a9a118/wacore/src/voip/mlow/analysis.rs#L401-L418
+	const toc60ms16k = byte(0x10)
+	toc := toc60ms16k
+	switch {
+	case vad.SpeechDetected:
+		toc |= 0x40
+	case codedAsActiveVoice:
+		toc |= 0x02
+	}
+	return SmplFrameParams{TOC: toc, Config: 0, CodedAsActiveVoice: codedAsActiveVoice, Internal: internal}
 }
 
 // quantize runs the bit-exact LSF quantizer + the C cond-coding condition.
@@ -290,7 +304,7 @@ func smplUnvoicedCandidate(synthT *SmplSynthTables, _ *SmplFrameSynth, win []flo
 	}
 
 	bgrid, bsym, brec, _ := fe.quantize(synthT, 0, prevNlsf)
-	predcoefs, resLpc, interpolIdx := smplLsfInterpolSearch(brec, fe.prevLsfq, winN)
+	predcoefs, resLpc, interpolIdx := smplLsfInterpolSearch(brec, fe.prevLsfq, winN, cs.codedAsActiveVoice)
 
 	percCorrs := cs.percCorrs
 	celpOut := runCelpSubframes(cs, &predcoefs, resLpc, &[SmplSubfrCount][2]float32{}, percCorrs, SmplPercEmphUV, 0)
@@ -447,7 +461,10 @@ func percCorrsToWght(corrs [][]float32, emph [2]float32, respLen int) [][]float3
 	return out
 }
 
-func smplLsfInterpolSearch(brec, prevLsfq []float32, winN []float32) ([SmplSubfrCount][17]float32, []float32, int32) {
+// codedAsActiveVoice false pins the index to 0 without searching: the index is
+// not on the wire for such a frame (DecodeSmplLsf reads 0 for it), so choosing 1
+// would whiten the residual under an interpolation the decoder will not reproduce.
+func smplLsfInterpolSearch(brec, prevLsfq []float32, winN []float32, codedAsActiveVoice bool) ([SmplSubfrCount][17]float32, []float32, int32) {
 	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/ed12f359a086b28e807ba236f0977af1000859fe/wacore/src/voip/mlow/analysis.rs#L1420-L1447
 	residualFor := func(idx int) ([SmplSubfrCount][17]float32, []float32, float32) {
 		pc4, _ := smplLPCInterpolIdx(brec, prevLsfq, idx, SmplNLSF2A)
@@ -469,6 +486,9 @@ func smplLsfInterpolSearch(brec, prevLsfq []float32, winN []float32) ([SmplSubfr
 		return predcoefs, res, sumRms
 	}
 	pc0, res0, rms0 := residualFor(0)
+	if !codedAsActiveVoice {
+		return pc0, res0, 0
+	}
 	pc1, res1, rms1 := residualFor(1)
 	if rms1 < rms0*0.998 {
 		return pc1, res1, 1
