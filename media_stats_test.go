@@ -64,6 +64,7 @@ func TestSilenceReasonUsesDominance(t *testing.T) {
 		AudioSilenceAuthenticationFailing: {SRTPUnprotectFailed: 5, RTPReceived: 1},
 		AudioSilenceUnexpectedPayloadType: {RTPPayloadTypeUnexpected: 5, RTPReceived: 1},
 		AudioSilenceUnknown:               {SRTPUnprotectFailed: 1, RTPReceived: 5},
+		AudioSilenceCodecRejectingFrames:  {MlowOffPointDropped: 20, RTPReceived: 20},
 	}
 	for want, delta := range cases {
 		if got := dominantSilenceReason(delta); got != want {

@@ -18,8 +18,21 @@ type MediaStats struct {
 	// SRTPUnprotectFailed is inbound audio packets that failed to
 	// authenticate against any active participant.
 	SRTPUnprotectFailed uint32
-	// AudioFramesDecoded is audio frames handed to playout.
+	// AudioFramesDecoded is inbound audio packets that decoded to coded audio.
 	AudioFramesDecoded uint32
+	// AudioFramesConcealed is frames replaced by silence because they could not
+	// be read: an envelope that would not unwrap, or a body whose decode did
+	// not end where the body said it should.
+	AudioFramesConcealed uint32
+	// MlowOffPointDropped is frames outside the decoder's operating point,
+	// including standard Opus on the MLow payload type.
+	MlowOffPointDropped uint32
+	// MlowInactiveOrSID is frames that carried no coded voice (the peer saying
+	// it is silent).
+	MlowInactiveOrSID uint32
+	// StandardOpusFrames is inbound packets that were standard Opus on the
+	// payload type MLow shares (a peer outside the MLow rollout).
+	StandardOpusFrames uint32
 	// AudioFramesSent is outbound audio frames sent to the relay (silence
 	// included).
 	AudioFramesSent uint32
@@ -32,7 +45,11 @@ type AudioSilenceReason string
 const (
 	AudioSilenceAuthenticationFailing AudioSilenceReason = "authentication_failing"
 	AudioSilenceUnexpectedPayloadType AudioSilenceReason = "unexpected_payload_type"
-	AudioSilenceUnknown               AudioSilenceReason = "unknown"
+	// AudioSilenceCodecRejectingFrames: packets authenticate, and the decoder
+	// refuses or conceals them - the peer is sending something this decoder
+	// does not read (a codec or operating-point mismatch).
+	AudioSilenceCodecRejectingFrames AudioSilenceReason = "codec_rejecting_frames"
+	AudioSilenceUnknown              AudioSilenceReason = "unknown"
 )
 
 // AudioHealth is one alarm from a call's audio watchdog.
@@ -50,6 +67,7 @@ type AudioHealth struct {
 
 type mediaStatsCounters struct {
 	rtpReceived, payloadUnexpected, unprotectFailed, framesDecoded, framesSent atomic.Uint32
+	framesConcealed, offPointDropped, inactiveOrSID, standardOpus              atomic.Uint32
 }
 
 func (s *mediaStatsCounters) snapshot() MediaStats {
@@ -59,6 +77,10 @@ func (s *mediaStatsCounters) snapshot() MediaStats {
 		RTPPayloadTypeUnexpected: s.payloadUnexpected.Load(),
 		SRTPUnprotectFailed:      s.unprotectFailed.Load(),
 		AudioFramesDecoded:       s.framesDecoded.Load(),
+		AudioFramesConcealed:     s.framesConcealed.Load(),
+		MlowOffPointDropped:      s.offPointDropped.Load(),
+		MlowInactiveOrSID:        s.inactiveOrSID.Load(),
+		StandardOpusFrames:       s.standardOpus.Load(),
 		AudioFramesSent:          s.framesSent.Load(),
 	}
 }
@@ -172,6 +194,10 @@ func statsDelta(now, then MediaStats) MediaStats {
 		RTPPayloadTypeUnexpected: sub(now.RTPPayloadTypeUnexpected, then.RTPPayloadTypeUnexpected),
 		SRTPUnprotectFailed:      sub(now.SRTPUnprotectFailed, then.SRTPUnprotectFailed),
 		AudioFramesDecoded:       sub(now.AudioFramesDecoded, then.AudioFramesDecoded),
+		AudioFramesConcealed:     sub(now.AudioFramesConcealed, then.AudioFramesConcealed),
+		MlowOffPointDropped:      sub(now.MlowOffPointDropped, then.MlowOffPointDropped),
+		MlowInactiveOrSID:        sub(now.MlowInactiveOrSID, then.MlowInactiveOrSID),
+		StandardOpusFrames:       sub(now.StandardOpusFrames, then.StandardOpusFrames),
 		AudioFramesSent:          sub(now.AudioFramesSent, then.AudioFramesSent),
 	}
 }
@@ -185,6 +211,8 @@ func dominantSilenceReason(delta MediaStats) AudioSilenceReason {
 		return AudioSilenceAuthenticationFailing
 	case delta.RTPPayloadTypeUnexpected > delta.RTPReceived:
 		return AudioSilenceUnexpectedPayloadType
+	case delta.MlowOffPointDropped > 0 || delta.AudioFramesConcealed > 0:
+		return AudioSilenceCodecRejectingFrames
 	}
 	return AudioSilenceUnknown
 }

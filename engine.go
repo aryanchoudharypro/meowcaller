@@ -1279,6 +1279,9 @@ func (e *engine) resolveAudioCodec(m *engineCall, callID string) {
 		Int("peer_mlow_capability", int(m.peerMlowCapability)).
 		Msg("selected audio codec")
 	m.codec = want
+	if m.call != nil {
+		m.call.negotiatedOpus.Store(want == AudioCodecOpus)
+	}
 }
 
 // onCallAck handles an <ack class="call"> node. For an outbound offer the relay

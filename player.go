@@ -96,17 +96,27 @@ func (p *Player) OnFinish(fn func()) {
 // next source frame while Playing, or nil to send silence (idle/paused/between
 // sources). On source EOF it goes Idle and fires OnFinish (outside the lock).
 func (p *Player) nextFrame() []float32 {
+	frame, _ := p.nextFrameOpus()
+	return frame
+}
+
+// nextFrameOpus is nextFrame plus the same frame as a standard Opus packet, when
+// the source is an OpusFrameSource and has one.
+func (p *Player) nextFrameOpus() (frame []float32, opusFrame []byte) {
 	p.mu.Lock()
 	if p.state != PlayerPlaying || p.src == nil {
 		p.mu.Unlock()
-		return nil
+		return nil, nil
 	}
 	src := p.src
 	p.mu.Unlock()
 
 	frame, err := src.ReadFrame()
 	if err == nil {
-		return frame
+		if encoded, ok := src.(OpusFrameSource); ok && frame != nil {
+			opusFrame = encoded.OpusFrame()
+		}
+		return frame, opusFrame
 	}
 	// Source exhausted (or errored): go idle, close it, and fire OnFinish once.
 	p.mu.Lock()
@@ -123,7 +133,7 @@ func (p *Player) nextFrame() []float32 {
 	}
 	if err != io.EOF {
 		// A decode error still ends playback; the frame (if any) is dropped.
-		return nil
+		return nil, nil
 	}
-	return frame // may be a final padded frame or nil
+	return frame, nil // may be a final padded frame or nil
 }

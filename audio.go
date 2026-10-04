@@ -29,6 +29,20 @@ type AudioSource interface {
 	Close() error
 }
 
+// OpusFrameSource is an AudioSource that can also hand over the frame it last
+// returned already encoded as standard Opus. MLow is the only codec this
+// library encodes itself, so a call with a peer outside the MLow rollout - which
+// decodes the shared payload type as standard Opus - can only be heard by that
+// peer if the source supplies the encoding.
+type OpusFrameSource interface {
+	AudioSource
+	// OpusFrame returns the frame the last ReadFrame returned as ONE standard
+	// Opus packet (RFC 6716): 16 kHz mono, 60 ms. The shipped clients use SILK
+	// wideband at about 24 kbit/s. It returns nil when that frame has no
+	// encoding; the call then sends OpusSilencePacket in its place.
+	OpusFrame() []byte
+}
+
 // AudioSink consumes the 16 kHz mono PCM frames decoded from the peer's audio. Attach
 // one with Call.Receive; built-ins record to a WAV file or forward to a callback. A
 // CGO Speaker() sink lives in the meowcaller/audio/malgo subpackage.

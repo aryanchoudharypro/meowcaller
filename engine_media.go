@@ -85,6 +85,10 @@ func (e *engine) maybeStartMedia(callID string) {
 	mctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
 	call := m.call
+	if call != nil {
+		// The codec may have been resolved before the Call existed.
+		call.negotiatedOpus.Store(m.codec == AudioCodecOpus)
+	}
 	var callKey []byte
 	if m.group {
 		callKey = append([]byte(nil), m.groupRawEpoch...)
@@ -729,6 +733,7 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 		ticker := time.NewTicker(frameInterval)
 		defer ticker.Stop()
 		var txCount uint64
+		sendingOpus := false
 		for {
 			select {
 			case <-ctx.Done():
@@ -736,15 +741,29 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 			case <-ticker.C:
 			}
 			frame := silence
+			var opusFrame []byte
 			if player, _ := callPlayerSink(call); player != nil {
 				// Drained even while muted, so the source doesn't back up.
-				if f := player.nextFrame(); f != nil && !call.IsMuted() {
-					frame = f
+				if f, encoded := player.nextFrameOpus(); f != nil && !call.IsMuted() {
+					frame, opusFrame = f, encoded
 				}
 			}
-			payload, err := enc.Encode(frame)
-			if err != nil {
-				continue
+			var payload []byte
+			if call.sendsStandardOpus() && !groupMode.Load() {
+				// The peer decodes this payload type as standard Opus (it is
+				// outside the MLow rollout): MLow bytes would be noise to it.
+				// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/e0225b3a/agent_docs/voip_audio_codecs.md
+				payload = standardOpusPayload(opusFrame)
+				if !sendingOpus {
+					sendingOpus = true
+					log.Info().Str("call_id", callID).Bool("source_encodes_opus", opusFrame != nil).
+						Msg("peer decodes standard Opus; sending Opus instead of MLow")
+				}
+			} else {
+				var err error
+				if payload, err = enc.Encode(frame); err != nil {
+					continue
+				}
 			}
 			packet, err := txPipe.ProtectAudio(payload)
 			if err != nil {
@@ -1273,8 +1292,27 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 		}
 		if call != nil {
 			call.stats.rtpReceived.Add(1)
-			call.stats.framesDecoded.Add(1)
-			call.health.onAudioProduced()
+			call.stats.framesConcealed.Add(audio.Report.Concealed)
+			call.stats.offPointDropped.Add(audio.Report.OffPoint)
+			call.stats.inactiveOrSID.Add(audio.Report.InactiveOrSID)
+			if audio.StandardOpus {
+				call.stats.standardOpus.Add(1)
+			}
+			if audio.StandardOpusSettled && !groupMode.Load() {
+				call.peerSendsOpus.Store(true)
+			}
+			// A SID is the peer TELLING us it is silent, and the decoder
+			// handled it: a muted peer is a healthy stream. Counted as
+			// production so the silence alarm does not fire through a long
+			// mute - the failures the alarm exists for report off-point or
+			// concealment, never this.
+			// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/e0225b3a/wacore/src/voip/engine.rs#L3087-L3124
+			if audio.Report.Decoded > 0 {
+				call.stats.framesDecoded.Add(1)
+			}
+			if audio.Report.Decoded > 0 || audio.Report.InactiveOrSID > 0 {
+				call.health.onAudioProduced()
+			}
 		}
 		audioReception.Observe(audio.SSRC, vh.SequenceNumber, audio.Timestamp, uint64(time.Now().UnixMilli()), SampleRate)
 		e.c.diag.Emit("rtp", map[string]any{

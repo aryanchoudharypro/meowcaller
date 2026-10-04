@@ -18,6 +18,12 @@ type participantAudioDecoder interface {
 	SetRedundancy(int)
 }
 
+// frameReportingDecoder is a decoder that can say what the last Decode did with
+// its packet, beyond the PCM it answered with.
+type frameReportingDecoder interface {
+	TakeFrameReport() mlow.FrameReport
+}
+
 type decodedParticipantAudio struct {
 	ParticipantID string
 	UserJID       types.JID
@@ -27,6 +33,15 @@ type decodedParticipantAudio struct {
 	SSRC          uint32
 	Timestamp     uint32
 	PCM           []float32
+	// Report is what the decoder did with the packet: a decoder that cannot
+	// say is taken at its word that the PCM is audio.
+	Report mlow.FrameReport
+	// StandardOpus means the packet was standard Opus on the payload type MLow
+	// shares, and went to the Opus decoder rather than the MLow one.
+	StandardOpus bool
+	// StandardOpusSettled means the stream as a whole is settled as standard
+	// Opus, which is also what the peer expects to be sent.
+	StandardOpusSettled bool
 }
 
 type unprotectedParticipantMedia struct {
@@ -56,6 +71,8 @@ type participantAudioReceiver struct {
 	appDataPipe   *MediaPipeline
 	srtcp         *mediaSrtcpReceiver
 	decoder       participantAudioDecoder
+	codecProbe    inboundCodecProbe
+	opusDecoder   *standardOpusDecoder
 }
 
 type installedGroupRawEpoch struct {
@@ -875,15 +892,55 @@ func (r *participantReceiveRegistry) DecodeAudio(packet []byte) (decodedParticip
 	// flag must track that per packet, not be negotiated once for the call, or a bare
 	// frame following a RED one (or vice versa) misparses.
 	redundancy := 0
+	standardOpus := false
 	if authenticatedHeader.PayloadType == rtp.RtpPayloadTypeMlowRed {
 		redundancy = 1
+	} else {
+		// The payload type carries either codec and only the negotiation says
+		// which. A packet whose Opus header agrees with its timestamp step
+		// cannot be MLow, so it never reaches the MLow decoder, which would
+		// synthesize noise from it.
+		agrees, settled := receiver.codecProbe.observe(payload, authenticatedHeader.SequenceNumber, authenticatedHeader.Timestamp)
+		if settled {
+			r.log.Info().
+				Str("call_id", r.callID).
+				Str("participant_id", receiver.participantID).
+				Uint8("toc_byte", payload[0]).
+				Msg("peer is sending standard Opus on the MLow payload type; decoding it as Opus")
+		}
+		standardOpus = agrees || receiver.codecProbe.opus
 	}
-	receiver.decoder.SetRedundancy(redundancy)
-	pcm := receiver.decoder.Decode(payload)
-	return decodedParticipantAudio{
+	decoded := decodedParticipantAudio{
 		ParticipantID: receiver.participantID,
 		UserJID:       receiver.userJID, DeviceJID: receiver.deviceJID,
 		PID: receiver.pid, HasPID: receiver.hasPID, SSRC: authenticatedHeader.Ssrc,
-		Timestamp: authenticatedHeader.Timestamp, PCM: pcm,
-	}, true
+		Timestamp: authenticatedHeader.Timestamp,
+	}
+	if standardOpus {
+		decoded.StandardOpus = true
+		decoded.StandardOpusSettled = receiver.codecProbe.opus
+		if receiver.opusDecoder == nil {
+			var err error
+			if receiver.opusDecoder, err = newStandardOpusDecoder(); err != nil {
+				r.log.Warn().Err(err).Str("call_id", r.callID).Msg("standard Opus audio cannot be decoded")
+			}
+		}
+		if receiver.opusDecoder != nil {
+			if pcm, ok := receiver.opusDecoder.decode(payload); ok {
+				decoded.PCM = pcm
+				decoded.Report = mlow.FrameReport{Decoded: 1}
+				return decoded, true
+			}
+		}
+		decoded.PCM = make([]float32, FrameSamples)
+		decoded.Report = mlow.FrameReport{Concealed: 1}
+		return decoded, true
+	}
+	receiver.decoder.SetRedundancy(redundancy)
+	decoded.PCM = receiver.decoder.Decode(payload)
+	decoded.Report = mlow.FrameReport{Decoded: 1}
+	if reporting, ok := receiver.decoder.(frameReportingDecoder); ok {
+		decoded.Report = reporting.TakeFrameReport()
+	}
+	return decoded, true
 }
