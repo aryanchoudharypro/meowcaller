@@ -246,3 +246,36 @@ func TestParseCallControlEnvelopeAllowsRekeyWithoutTimestamp(t *testing.T) {
 		t.Fatalf("envelope = %+v", envelope)
 	}
 }
+
+func TestParseCallControlEnvelopeRejectsRekeyWithInvalidTimestamp(t *testing.T) {
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/pull/1711 (parse_call_stanza: absent t allowed, present invalid t rejected)
+	from := types.JID{User: "100001", Server: types.HiddenUserServer}
+	creator := types.JID{User: "300003", Server: types.HiddenUserServer, Device: 4}
+	rekeyNode := func(timestamp string) waBinary.Node {
+		return waBinary.Node{
+			Tag:   "call",
+			Attrs: waBinary.Attrs{"from": from, "id": "REKEY", "t": timestamp},
+			Content: []waBinary.Node{{
+				Tag: "enc_rekey",
+				Attrs: waBinary.Attrs{
+					"call-id": "CID", "call-creator": creator, "transaction-id": "4",
+				},
+			}},
+		}
+	}
+
+	for _, timestamp := range []string{"", "garbage", "1.5", "123junk", "9223372036854775808"} {
+		node := rekeyNode(timestamp)
+		if envelope, err := ParseCallControlEnvelope(&node); err == nil {
+			t.Fatalf("t=%q: envelope = %+v, want error", timestamp, envelope)
+		}
+	}
+	node := rekeyNode("1766847151")
+	envelope, err := ParseCallControlEnvelope(&node)
+	if err != nil {
+		t.Fatalf("ParseCallControlEnvelope: %v", err)
+	}
+	if envelope.Timestamp.Unix() != 1766847151 {
+		t.Fatalf("timestamp = %v, want 1766847151", envelope.Timestamp)
+	}
+}
