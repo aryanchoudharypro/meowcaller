@@ -119,26 +119,61 @@ func (e *engine) dispatchRemoteScreenShare(
 	envelope *signaling.CallControlEnvelope,
 	screenShare signaling.ScreenShare,
 ) {
-	// Source of truth: https://github.com/purpshell/meowcaller/blob/36d54857c74e45ccb08f6444a32d2afa13f20be9/datasheets/group-video-reactions.md#L44-L56
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/94c53e833805c58c9f5966b08d08c990650a651e/src/handlers/call.rs#L705-L762
 	if envelope == nil {
 		return
 	}
+	started := screenShare.State == signaling.ScreenShareStarted
 	e.mu.Lock()
 	m := e.calls[envelope.CallID]
 	var call *Call
+	var participant types.JID
+	authorized, videoCall := false, false
 	if m != nil {
 		call = m.call
+		participant, authorized = canonicalGroupParticipant(m.groupUpdate, callControlParticipant(envelope))
+		videoCall = m.groupUpdate != nil && m.groupUpdate.Media == "video"
 	}
 	e.mu.Unlock()
-	if call != nil {
-		call.dispatchScreenShare(ScreenShareState{
-			Participant:      callControlParticipant(envelope),
-			Active:           screenShare.State == signaling.ScreenShareStarted,
-			Version:          screenShare.Version,
-			ScreenShareID:    screenShare.ScreenShareID,
-			HasScreenShareID: screenShare.HasScreenShareID,
-		})
+	if call == nil {
+		return
 	}
+	if !authorized {
+		e.c.log.Warn().Str("call_id", envelope.CallID).Msg("rejected screen-share state from a sender outside the roster")
+		return
+	}
+	// A screen share rides the video plane, which an audio-only group does not have.
+	if started && !videoCall {
+		e.c.log.Warn().Str("call_id", envelope.CallID).Msg("rejected screen-share start for an audio-only group")
+		return
+	}
+	call.dispatchScreenShare(ScreenShareState{
+		Participant:      participant,
+		Active:           started,
+		Version:          screenShare.Version,
+		ScreenShareID:    screenShare.ScreenShareID,
+		HasScreenShareID: screenShare.HasScreenShareID,
+	})
+}
+
+// canonicalGroupParticipant resolves a call-control sender to the roster JID of
+// a connected participant, matching either of the participant's addresses.
+func canonicalGroupParticipant(update *groupCallUpdate, sender types.JID) (types.JID, bool) {
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/94c53e833805c58c9f5966b08d08c990650a651e/wacore/src/voip_control/registry.rs#L1466-L1479
+	if update == nil || sender.IsEmpty() {
+		return types.EmptyJID, false
+	}
+	sender = sender.ToNonAD()
+	for _, participant := range update.Participants {
+		if participant.State != "connected" {
+			continue
+		}
+		jid := participant.JID.ToNonAD()
+		if jid == sender || (!participant.PN.IsEmpty() && participant.PN.ToNonAD() == sender) {
+			return jid, true
+		}
+	}
+	return types.EmptyJID, false
 }
 
 func callControlParticipant(envelope *signaling.CallControlEnvelope) types.JID {
@@ -235,6 +270,7 @@ func (e *engine) applyGroupUpdate(update groupCallUpdate) (groupCallUpdate, grou
 			}
 		}
 		call.setGroupState(groupCallStateFromUpdate(stored))
+		call.pruneScreenShares(stored)
 	}
 	e.maybeStartMedia(update.CallID)
 	return cloneGroupCallUpdate(stored), groupUpdateApplied

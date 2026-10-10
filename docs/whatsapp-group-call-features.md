@@ -64,6 +64,11 @@ same primary video SSRC and preserves RTP sequence continuity. A browser should:
 3. switch the local H.264 source and request a fresh IDR;
 4. send `StopScreenShare`, restore the camera source, and request another IDR.
 
+`StartScreenShare` returns `ErrScreenShareNeedsGroupCall` on a call without a
+group roster and `ErrScreenShareNeedsVideo` until the group is a video call with
+local video flowing. A share from a participant who leaves, or any share once the
+call drops to audio, is reported to `OnScreenShare` as stopped.
+
 Stopping screen share or local video does not hang up the call. Camera and
 remote-video directions remain independent.
 

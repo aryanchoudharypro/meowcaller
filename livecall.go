@@ -2,6 +2,7 @@ package meowcaller
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -359,7 +360,18 @@ func (c *Call) SetHandRaised(raised bool) error {
 	return c.eng.setHandRaised(c.id, raised)
 }
 
-// StartScreenShare announces a version-2 screen share independently from camera video.
+// ErrScreenShareNeedsGroupCall is returned when a screen share is announced on
+// a call that has no group roster. The screen_share action is only known for
+// group calls; a 1:1 call can still send display frames as its video.
+var ErrScreenShareNeedsGroupCall = errors.New("meowcaller: screen sharing is only announced on group calls")
+
+// ErrScreenShareNeedsVideo is returned when a screen share is started on a
+// group call that is audio-only or whose local video is not flowing yet.
+var ErrScreenShareNeedsVideo = errors.New("meowcaller: screen sharing requires an active local video plane")
+
+// StartScreenShare announces a version-2 screen share. The display frames ride
+// the call's video plane, so the call must be a video group call with this
+// client's video already on.
 func (c *Call) StartScreenShare(screenShareID *uint32) error {
 	return c.eng.setScreenShare(c.id, true, screenShareID)
 }
@@ -566,6 +578,37 @@ func (c *Call) dispatchScreenShare(state ScreenShareState) {
 	c.mu.Unlock()
 	if fn != nil {
 		fn(state)
+	}
+}
+
+// pruneScreenShares drops the shares of participants a committed roster no
+// longer lists as connected, and every share once the call is audio-only. Each
+// dropped share is reported to the listener as stopped.
+func (c *Call) pruneScreenShares(update groupCallUpdate) {
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/94c53e833805c58c9f5966b08d08c990650a651e/wacore/src/voip_control/group.rs#L161-L189
+	connected := make(map[types.JID]struct{}, len(update.Participants))
+	if update.Media != "audio" {
+		for _, participant := range update.Participants {
+			if participant.State == "connected" {
+				connected[participant.JID.ToNonAD()] = struct{}{}
+			}
+		}
+	}
+	c.mu.Lock()
+	var dropped []ScreenShareState
+	for key, share := range c.screenShares {
+		if _, ok := connected[key]; !ok {
+			delete(c.screenShares, key)
+			share.Active = false
+			dropped = append(dropped, share)
+		}
+	}
+	fn := c.onScreenShare
+	c.mu.Unlock()
+	if fn != nil {
+		for _, share := range dropped {
+			fn(share)
+		}
 	}
 }
 

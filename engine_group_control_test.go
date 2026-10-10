@@ -2,6 +2,7 @@ package meowcaller
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/purpshell/meowcaller/signaling"
@@ -126,6 +127,10 @@ func TestUnknownCallControlsUpdateHandScreenAndWaitingRoom(t *testing.T) {
 		t.Fatal("remote hand state was not reflected in the group roster")
 	}
 
+	eng.calls["GROUP"].groupUpdate = &groupCallUpdate{
+		CallID: "GROUP", CallCreator: creator, Media: "video",
+		Participants: []groupCallParticipant{{JID: participant, State: "connected"}},
+	}
 	screenID := uint32(9)
 	screenNode := signaling.BuildScreenShare(
 		"GROUP", types.NewJID("GROUP", "call"), creator, "SCREEN",
@@ -286,5 +291,130 @@ func TestInviteDeviceCapabilityCopiesNegotiatedValue(t *testing.T) {
 	raw[0] = 0xff
 	if got.Capability[0] != 1 {
 		t.Fatal("negotiated capability aliases stanza bytes")
+	}
+}
+
+func screenShareTestNode(creator, participant types.JID, state signaling.ScreenShareState) *waBinary.Node {
+	node := signaling.BuildScreenShare("GROUP", types.NewJID("GROUP", "call"), creator, "SCREEN", state, nil)
+	node.Attrs["from"] = types.NewJID("GROUP", "call")
+	node.Attrs["participant"] = participant
+	return &node
+}
+
+func TestRemoteScreenShareNeedsARosterSenderAndAVideoCall(t *testing.T) {
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/94c53e833805c58c9f5966b08d08c990650a651e/src/handlers/call.rs#L705-L762
+	eng, call, creator := testGroupEngine("GROUP")
+	lid := types.NewJID("200", types.HiddenUserServer)
+	pn := types.NewJID("15550200", types.DefaultUserServer)
+	left := types.NewJID("300", types.HiddenUserServer)
+	roster := func(media string) *groupCallUpdate {
+		return &groupCallUpdate{
+			CallID: "GROUP", CallCreator: creator, Media: media,
+			Participants: []groupCallParticipant{
+				{JID: lid, PN: pn, State: "connected"},
+				{JID: left, State: "left"},
+			},
+		}
+	}
+
+	eng.onUnknownCallEvent(screenShareTestNode(creator, lid, signaling.ScreenShareStarted))
+	if shares := call.ScreenShares(); len(shares) != 0 {
+		t.Fatalf("share accepted before any roster: %#v", shares)
+	}
+
+	eng.calls["GROUP"].groupUpdate = roster("audio")
+	eng.onUnknownCallEvent(screenShareTestNode(creator, lid, signaling.ScreenShareStarted))
+	if shares := call.ScreenShares(); len(shares) != 0 {
+		t.Fatalf("share accepted on an audio-only group: %#v", shares)
+	}
+
+	eng.calls["GROUP"].groupUpdate = roster("video")
+	for _, outsider := range []types.JID{left, types.NewJID("999", types.HiddenUserServer)} {
+		eng.onUnknownCallEvent(screenShareTestNode(creator, outsider, signaling.ScreenShareStarted))
+		if shares := call.ScreenShares(); len(shares) != 0 {
+			t.Fatalf("share accepted from %s: %#v", outsider, shares)
+		}
+	}
+
+	// A sender known by phone number is recorded under its roster address.
+	eng.onUnknownCallEvent(screenShareTestNode(creator, pn, signaling.ScreenShareStarted))
+	shares := call.ScreenShares()
+	if len(shares) != 1 || shares[0].Participant != lid || !shares[0].Active {
+		t.Fatalf("screen shares = %#v", shares)
+	}
+
+	// A stop is not held to the video requirement.
+	eng.calls["GROUP"].groupUpdate = roster("audio")
+	eng.onUnknownCallEvent(screenShareTestNode(creator, lid, signaling.ScreenShareStopped))
+	if shares = call.ScreenShares(); len(shares) != 0 {
+		t.Fatalf("stop was not applied: %#v", shares)
+	}
+}
+
+func TestRosterPrunesScreenShares(t *testing.T) {
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/94c53e833805c58c9f5966b08d08c990650a651e/wacore/src/voip_control/group.rs#L161-L189
+	_, call, creator := testGroupEngine("GROUP")
+	stays := types.NewJID("200", types.HiddenUserServer)
+	leaves := types.NewJID("300", types.HiddenUserServer)
+	var stopped []types.JID
+	call.OnScreenShare(func(state ScreenShareState) {
+		if !state.Active {
+			stopped = append(stopped, state.Participant)
+		}
+	})
+	call.dispatchScreenShare(ScreenShareState{Participant: stays, Active: true, Version: 2})
+	call.dispatchScreenShare(ScreenShareState{Participant: leaves, Active: true, Version: 2})
+
+	update := groupCallUpdate{
+		CallID: "GROUP", CallCreator: creator, Media: "video",
+		Participants: []groupCallParticipant{
+			{JID: stays, State: "connected"}, {JID: leaves, State: "left"},
+		},
+	}
+	call.pruneScreenShares(update)
+	shares := call.ScreenShares()
+	if len(shares) != 1 || shares[0].Participant != stays {
+		t.Fatalf("screen shares after a participant left = %#v", shares)
+	}
+	if len(stopped) != 1 || stopped[0] != leaves {
+		t.Fatalf("stopped = %v, want only %s", stopped, leaves)
+	}
+
+	update.Media = "audio"
+	call.pruneScreenShares(update)
+	if shares = call.ScreenShares(); len(shares) != 0 {
+		t.Fatalf("screen shares after an audio downgrade = %#v", shares)
+	}
+}
+
+func TestStartScreenShareNeedsAVideoGroupWithLocalVideo(t *testing.T) {
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/94c53e833805c58c9f5966b08d08c990650a651e/src/client/voip.rs#L1885-L1900
+	eng, call, creator := testGroupEngine("GROUP")
+	sent := 0
+	eng.sendCallNode = func(context.Context, waBinary.Node) error {
+		sent++
+		return nil
+	}
+	m := eng.calls["GROUP"]
+
+	if err := call.StartScreenShare(nil); !errors.Is(err, ErrScreenShareNeedsGroupCall) {
+		t.Fatalf("without a roster: err = %v", err)
+	}
+	m.groupUpdate = &groupCallUpdate{CallID: "GROUP", CallCreator: creator, Media: "audio"}
+	m.localVideo = true
+	if err := call.StartScreenShare(nil); !errors.Is(err, ErrScreenShareNeedsVideo) {
+		t.Fatalf("audio-only group: err = %v", err)
+	}
+	m.groupUpdate.Media = "video"
+	m.localVideo = false
+	if err := call.StartScreenShare(nil); !errors.Is(err, ErrScreenShareNeedsVideo) {
+		t.Fatalf("local video off: err = %v", err)
+	}
+	m.localVideo, m.videoGate = true, true
+	if err := call.StartScreenShare(nil); !errors.Is(err, ErrScreenShareNeedsVideo) {
+		t.Fatalf("local video still waiting on the upgrade: err = %v", err)
+	}
+	if sent != 0 {
+		t.Fatalf("sent %d screen-share stanzas for refused starts", sent)
 	}
 }

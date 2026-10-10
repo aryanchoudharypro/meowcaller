@@ -526,6 +526,18 @@ func (e *engine) setScreenShare(callID string, active bool, screenShareID *uint3
 	if err != nil {
 		return err
 	}
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/94c53e833805c58c9f5966b08d08c990650a651e/src/client/voip.rs#L1885-L1900
+	e.mu.Lock()
+	m := e.calls[callID]
+	group := m != nil && m.group && m.groupUpdate != nil
+	videoPlane := group && m.groupUpdate.Media == "video" && m.localVideo && !m.videoGate
+	e.mu.Unlock()
+	if !group {
+		return ErrScreenShareNeedsGroupCall
+	}
+	if active && !videoPlane {
+		return ErrScreenShareNeedsVideo
+	}
 	state := signaling.ScreenShareStopped
 	if active {
 		state = signaling.ScreenShareStarted
@@ -553,9 +565,9 @@ func (e *engine) setScreenShare(callID string, active bool, screenShareID *uint3
 			Participant: participant, Active: active, Version: 2,
 			ScreenShareID: valueOrZero(screenShareID), HasScreenShareID: screenShareID != nil,
 		})
-		if active {
-			call.requestVideoKeyframe()
-		}
+		// Both directions swap the encoder's source, so the peers need an IDR
+		// before either picture can resume.
+		call.requestVideoKeyframe()
 	}
 	return nil
 }
