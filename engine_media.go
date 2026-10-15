@@ -500,16 +500,19 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 	audioMixer := newParticipantAudioMixer()
 	var audioSinkFramer participantAudioSinkFramer
 	go func() {
-		ticker := time.NewTicker(time.Duration(participantAudioMixChunkSamples) * time.Second / SampleRate)
+		ticker := time.NewTicker(participantAudioMixChunkDuration)
 		defer ticker.Stop()
+		clock := newParticipantAudioMixClock(time.Now())
 		playoutStarted := false
 		var writeFailures uint64
 		for {
+			var now time.Time
 			select {
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
+			case now = <-ticker.C:
 			}
+			due := clock.Due(now)
 			if !groupMixing.Load() {
 				continue
 			}
@@ -517,26 +520,28 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 			if sink == nil {
 				continue
 			}
-			chunk, ok := audioMixer.MixChunk()
-			if !ok {
-				continue
-			}
-			frame, ok := audioSinkFramer.Push(chunk)
-			if !ok {
-				continue
-			}
-			if err := sink.WriteFrame(frame); err != nil {
-				if writeFailures++; writeFailures == 1 {
-					log.Warn().Err(err).Msg("failed to write mixed WhatsApp audio")
+			for ; due > 0; due-- {
+				chunk, ok := audioMixer.MixChunk()
+				if !ok {
+					continue
 				}
-				continue
-			}
-			if !playoutStarted {
-				playoutStarted = true
-				log.Info().
-					Int("prefill_ms", participantAudioMixerPrefillSamples*1000/SampleRate).
-					Int("chunk_ms", participantAudioMixChunkSamples*1000/SampleRate).
-					Msg("started participant-mixed inbound audio playout")
+				frame, ok := audioSinkFramer.Push(chunk)
+				if !ok {
+					continue
+				}
+				if err := sink.WriteFrame(frame); err != nil {
+					if writeFailures++; writeFailures == 1 {
+						log.Warn().Err(err).Msg("failed to write mixed WhatsApp audio")
+					}
+					continue
+				}
+				if !playoutStarted {
+					playoutStarted = true
+					log.Info().
+						Int("prefill_ms", participantAudioMixerPrefillSamples*1000/SampleRate).
+						Int("chunk_ms", participantAudioMixChunkSamples*1000/SampleRate).
+						Msg("started participant-mixed inbound audio playout")
+				}
 			}
 		}
 	}()

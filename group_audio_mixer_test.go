@@ -1,6 +1,9 @@
 package meowcaller
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 type constantFrameParticipantDecoder struct {
 	value float32
@@ -230,5 +233,28 @@ func TestParticipantAudioMixerTransitionWaitsForSecondRemote(t *testing.T) {
 	}
 	if got := frameLengths(sink.frames); len(got) != 2 || got[0] != FrameSamples || got[1] != FrameSamples {
 		t.Fatalf("transition handoff frames = %v, want [%d %d]", got, FrameSamples, FrameSamples)
+	}
+}
+
+func TestParticipantAudioMixClockCatchesUpMissedTicks(t *testing.T) {
+	start := time.Unix(0, 0)
+	clock := newParticipantAudioMixClock(start)
+	if got := clock.Due(start.Add(participantAudioMixChunkDuration)); got != 1 {
+		t.Fatalf("first tick due = %d, want 1", got)
+	}
+	// Two ticks were dropped: the next one mixes all three chunks.
+	if got := clock.Due(start.Add(4 * participantAudioMixChunkDuration)); got != 3 {
+		t.Fatalf("after two missed ticks due = %d, want 3", got)
+	}
+	// A tick that fires early mixes nothing extra.
+	if got := clock.Due(start.Add(4*participantAudioMixChunkDuration + time.Millisecond)); got != 0 {
+		t.Fatalf("early tick due = %d, want 0", got)
+	}
+	// A long stall catches up only the bounded amount.
+	if got := clock.Due(start.Add(1004 * participantAudioMixChunkDuration)); got != participantAudioMixMaxCatchUp {
+		t.Fatalf("after a stall due = %d, want %d", got, participantAudioMixMaxCatchUp)
+	}
+	if got := clock.Due(start.Add(1005 * participantAudioMixChunkDuration)); got != 1 {
+		t.Fatalf("tick after a stall due = %d, want 1", got)
 	}
 }

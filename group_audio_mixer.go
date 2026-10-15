@@ -3,6 +3,7 @@ package meowcaller
 import (
 	"slices"
 	"sync"
+	"time"
 )
 
 const (
@@ -21,6 +22,37 @@ type participantAudioMixer struct {
 	streams       map[string]*participantAudioMixQueue
 	allowed       map[string]struct{}
 	rosterApplied bool
+}
+
+const (
+	participantAudioMixChunkDuration = time.Duration(participantAudioMixChunkSamples) * time.Second / SampleRate
+	// participantAudioMixMaxCatchUp bounds how many chunks one tick may mix after
+	// a stall; time beyond it is skipped rather than played back as a burst.
+	participantAudioMixMaxCatchUp = 12
+)
+
+// participantAudioMixClock counts how many mix chunks are due by wall-clock
+// time. A time.Ticker drops ticks when the receiver is late (a busy CPU, a GC
+// pause), and mixing one chunk per tick then runs slower than real time: the
+// participant queues fill to their cap and drop audio.
+type participantAudioMixClock struct {
+	start time.Time
+	mixed int64
+}
+
+func newParticipantAudioMixClock(start time.Time) *participantAudioMixClock {
+	return &participantAudioMixClock{start: start}
+}
+
+// Due returns how many chunks to mix at now, and counts them as mixed.
+func (c *participantAudioMixClock) Due(now time.Time) int {
+	elapsed := int64(now.Sub(c.start) / participantAudioMixChunkDuration)
+	if elapsed-c.mixed > participantAudioMixMaxCatchUp {
+		c.mixed = elapsed - participantAudioMixMaxCatchUp
+	}
+	due := int(max(elapsed-c.mixed, 0))
+	c.mixed += int64(due)
+	return due
 }
 
 type participantAudioSinkFramer struct {
