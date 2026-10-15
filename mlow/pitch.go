@@ -209,6 +209,33 @@ type PitchEstState struct {
 	PrevPitchCorr float32
 	PrevLagblk    int32
 	PrevLagidx    int32
+
+	scratch [pitchScratchSlots][]float32
+}
+
+// Slots for the per-call buffers SmplPitch borrows from its state.
+const (
+	pitchScratchStage1 = iota
+	pitchScratchLtpBufHp
+	pitchScratchStage1Ds
+	pitchScratchE1
+	pitchScratchC
+	pitchScratchE
+	pitchScratchCStage1
+	pitchScratchH
+	pitchScratchE1Fs
+	pitchScratchSlots
+)
+
+// zeroed returns slot's buffer resized to n and cleared, exactly what make would
+// give, without allocating a new one on every call.
+func (s *PitchEstState) zeroed(slot, n int) []float32 {
+	if cap(s.scratch[slot]) < n {
+		s.scratch[slot] = make([]float32, n)
+	}
+	buf := s.scratch[slot][:n]
+	clear(buf)
+	return buf
 }
 
 // ResetCond clears the cross-frame lag-block predictor (smpl_pitch_reset_cond):

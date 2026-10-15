@@ -287,7 +287,13 @@ func celpGetMaxi(x []float32, xLen int) int {
 
 func celpGetMaxiK(x []float32, idx []int32, xLen, k int) {
 	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/ed12f359a086b28e807ba236f0977af1000859fe/wacore/src/voip/mlow/smpl_celp.rs#L445-L462
-	taken := make([]bool, xLen)
+	var takenBuf [smplMaxSfLen]bool
+	var taken []bool
+	if xLen <= len(takenBuf) {
+		taken = takenBuf[:xLen]
+	} else {
+		taken = make([]bool, xLen)
+	}
 	for kk := 0; kk < k; kk++ {
 		var best float32 = -math.MaxFloat32
 		bi := 0
@@ -555,6 +561,8 @@ type CelpEncoder struct {
 	impLpcBuf []float32
 	phi       []float32
 	phiFlip   []float32
+
+	fcbScratch *fcbSearchScratch
 }
 
 // NewCelpEncoder builds the encoder (mirrors CelpEncoder::new).
@@ -739,6 +747,26 @@ func newFcbSearchScratch() *fcbSearchScratch {
 	}
 }
 
+// reset returns a scratch to the state newFcbSearchScratch builds, so one can be
+// reused for every search instead of allocated per subframe.
+func (sc *fcbSearchScratch) reset() {
+	for _, states := range sc.fcbStates {
+		for i := range states {
+			clear(states[i].pulsePositions)
+			clear(states[i].pulseSigns)
+			clear(states[i].num)
+			clear(states[i].den)
+		}
+	}
+	sc.readIdx, sc.writeIdx = 0, 1
+	clear(sc.fcbs)
+	sc.fcbsSize = 0
+	clear(sc.fcbCandidates)
+	sc.fcbCandidatesSize = 0
+	clear(sc.uniqueSgntr)
+	sc.uniqueSgntrSize = 0
+}
+
 func (sc *fcbSearchScratch) swapRw() { sc.readIdx, sc.writeIdx = sc.writeIdx, sc.readIdx }
 
 func (sc *fcbSearchScratch) isUnique(sgntr uint64) bool {
@@ -762,33 +790,34 @@ func (e *CelpEncoder) addPulse(sc *fcbSearchScratch, fcbIdxIn int, dAbs, dSign [
 	fcbStateIdx := sc.fcbs[fcbIdxIn].fcbStateIdx
 	fcbSgntrBase := sc.fcbs[fcbIdxIn].sgntr
 
-	ri := sc.readIdx
-	wi := sc.writeIdx
+	src := &sc.fcbStates[sc.readIdx][fcbStateIdx]
+	dst := &sc.fcbStates[sc.writeIdx][idx]
+	srcPos := src.pulsePositions[:fcbNPulses]
+	srcSgn := src.pulseSigns[:fcbNPulses]
+	den := dst.den[:fcbSubfrlen]
+	phiFlip := e.phiFlip
 
 	add := dAbs[fcbPosNew]
-	for i := 0; i < fcbSubfrlen; i++ {
-		sc.fcbStates[wi][idx].num[i] = sc.fcbStates[ri][fcbStateIdx].num[i] + add
+	num, srcNum := dst.num[:fcbSubfrlen], src.num[:fcbSubfrlen]
+	for i := range num {
+		num[i] = srcNum[i] + add
 	}
-	for i := 0; i < fcbSubfrlen; i++ {
-		sc.fcbStates[wi][idx].den[i] = sc.fcbStates[ri][fcbStateIdx].den[i]
-	}
+	copy(den, src.den[:fcbSubfrlen])
 
 	if pitchSharp == 0.0 {
 		nz0, nz1 := celpNonZeroRange(fcbPosNew, percRespLen, fcbSubfrlen)
 		colOff := celpPhiColOffset(fcbPosNew)
 		var dDen float32
-		for i := 0; i < int(fcbNPulses); i++ {
-			pos := sc.fcbStates[ri][fcbStateIdx].pulsePositions[i]
-			sgn := sc.fcbStates[ri][fcbStateIdx].pulseSigns[i]
-			dDen += e.phiFlip[int(colOff+pos)] * sgn
+		for i, pos := range srcPos {
+			dDen += phiFlip[int(colOff+pos)] * srcSgn[i]
 		}
 		dDen *= 2.0 * fcbSignNew
-		dDen += e.phiFlip[int(colOff+fcbPosNew)]
-		for i := 0; i < fcbSubfrlen; i++ {
-			sc.fcbStates[wi][idx].den[i] += dDen
+		dDen += phiFlip[int(colOff+fcbPosNew)]
+		for i := range den {
+			den[i] += dDen
 		}
 		for i := nz0; i < nz1; i++ {
-			sc.fcbStates[wi][idx].den[i] += 2.0 * fcbSignNew * dSign[i] * e.phiFlip[int(colOff)+i]
+			den[i] += 2.0 * fcbSignNew * dSign[i] * phiFlip[int(colOff)+i]
 		}
 	} else {
 		var g1 float32
@@ -796,12 +825,11 @@ func (e *CelpEncoder) addPulse(sc *fcbSearchScratch, fcbIdxIn int, dAbs, dSign [
 		g1 = 1.0
 		for pos := fcbPosNew; pos < int32(fcbSubfrlen); pos += lag {
 			colOff := celpPhiColOffset(pos)
-			for i := 0; i < int(fcbNPulses); i++ {
+			for i, pulsePos := range srcPos {
 				g2 := g1
-				pulsePos := sc.fcbStates[ri][fcbStateIdx].pulsePositions[i]
-				pulseSgn := sc.fcbStates[ri][fcbStateIdx].pulseSigns[i]
+				pulseSgn := srcSgn[i]
 				for posq := pulsePos; posq < int32(fcbSubfrlen); posq += lag {
-					dDen += g2 * e.phiFlip[int(colOff+posq)] * pulseSgn
+					dDen += g2 * phiFlip[int(colOff+posq)] * pulseSgn
 					g2 *= pitchSharp
 				}
 			}
@@ -813,15 +841,15 @@ func (e *CelpEncoder) addPulse(sc *fcbSearchScratch, fcbIdxIn int, dAbs, dSign [
 			colOff := celpPhiColOffset(pos1)
 			g2 := g1
 			for pos2 := fcbPosNew; pos2 < int32(fcbSubfrlen); pos2 += lag {
-				dDen += g2 * e.phiFlip[int(colOff+pos2)]
+				dDen += g2 * phiFlip[int(colOff+pos2)]
 				g2 *= pitchSharp
 			}
 			g1 *= pitchSharp
 		}
-		for i := 0; i < fcbSubfrlen; i++ {
-			sc.fcbStates[wi][idx].den[i] += dDen
+		for i := range den {
+			den[i] += dDen
 		}
-		ddDen := make([]float32, smplMaxSfLen)
+		var ddDen [smplMaxSfLen]float32
 		g1 = 1.0
 		for pos := fcbPosNew; pos < int32(fcbSubfrlen); pos += lag {
 			nz0, nz1 := celpNonZeroRange(pos, percRespLen, fcbSubfrlen)
@@ -837,29 +865,27 @@ func (e *CelpEncoder) addPulse(sc *fcbSearchScratch, fcbIdxIn int, dAbs, dSign [
 					endI = int32(nz1) - k
 				}
 				for i := startI; i < endI; i++ {
-					ddDen[i] += g2 * e.phiFlip[int(colOff+i+k)]
+					ddDen[i] += g2 * phiFlip[int(colOff+i+k)]
 				}
 				g2 *= pitchSharp
 			}
 			g1 *= pitchSharp
 		}
-		for i := 0; i < fcbSubfrlen; i++ {
-			sc.fcbStates[wi][idx].den[i] += 2.0 * fcbSignNew * dSign[i] * ddDen[i]
+		for i := range den {
+			den[i] += 2.0 * fcbSignNew * dSign[i] * ddDen[i]
 		}
 	}
 
-	for i := 0; i < int(fcbNPulses); i++ {
-		sc.fcbStates[wi][idx].pulsePositions[i] = sc.fcbStates[ri][fcbStateIdx].pulsePositions[i]
-		sc.fcbStates[wi][idx].pulseSigns[i] = sc.fcbStates[ri][fcbStateIdx].pulseSigns[i]
-	}
-	sc.fcbStates[wi][idx].pulsePositions[fcbNPulses] = fcbPosNew
-	sc.fcbStates[wi][idx].pulseSigns[fcbNPulses] = fcbSignNew
+	copy(dst.pulsePositions, srcPos)
+	copy(dst.pulseSigns, srcSgn)
+	dst.pulsePositions[fcbNPulses] = fcbPosNew
+	dst.pulseSigns[fcbNPulses] = fcbSignNew
 
 	newNPulses := fcbNPulses + 1
-	q := make([]float32, smplMaxSfLen)
-	celpQ(sc.fcbStates[wi][idx].num, sc.fcbStates[wi][idx].den, fcbSubfrlen, q)
+	var q [smplMaxSfLen]float32
+	celpQ(dst.num, dst.den, fcbSubfrlen, q[:])
 	var sortIx [celpMaxNumsurv]int32
-	celpGetMaxiK(q, sortIx[:], fcbSubfrlen, numsurv)
+	celpGetMaxiK(q[:], sortIx[:], fcbSubfrlen, numsurv)
 	for i := 0; i < numsurv; i++ {
 		pos := int(sortIx[i])
 		sgntr := fcbSgntrBase + e.sgntrs[pos]
@@ -876,7 +902,12 @@ func (e *CelpEncoder) smplFcbSearchDeldec(d []float32, pitchSharp float32, lag i
 	pulses *[smplCelpMaxRates][smplMaxPulsesPerSf]int16, nPulses *[smplCelpMaxRates]int16, wnrg, gainFromSearch, fcbWnrg *[smplCelpMaxRates]float32) {
 	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/ed12f359a086b28e807ba236f0977af1000859fe/wacore/src/voip/mlow/smpl_celp.rs#L1247-L1494
 	fcbSubfrlen := e.fcbSubfrlen
-	sc := newFcbSearchScratch()
+	if e.fcbScratch == nil {
+		e.fcbScratch = newFcbSearchScratch()
+	} else {
+		e.fcbScratch.reset()
+	}
+	sc := e.fcbScratch
 
 	dNew := make([]float32, smplMaxSfLen)
 	dAbs := make([]float32, smplMaxSfLen)

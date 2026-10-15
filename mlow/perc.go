@@ -179,27 +179,6 @@ func percRc2a(rc []float32, order int, a []float32) {
 	}
 }
 
-// --- inverse real FFT (forward + cfft live in fft.go) ----------------------
-
-// rfftBackwardOrdered: inverse real FFT from the ordered REAL layout, unnormalized.
-func rfftBackwardOrdered(f []float32, time []float32) {
-	n := len(f)
-	spec := make([]cpx, n)
-	spec[0] = cpx{f[0], 0}
-	spec[n/2] = cpx{f[1], 0}
-	for i := 1; i < n/2; i++ {
-		re := f[2*i]
-		im := f[2*i+1]
-		spec[i] = cpx{re, im}
-		spec[n-i] = cpx{re, -im}
-	}
-	tout := make([]cpx, n)
-	cfft(spec, tout, 1.0)
-	for i := 0; i < n; i++ {
-		time[i] = tout[i].re
-	}
-}
-
 // --- perceptual model (smpl_perc_wght.c) -----------------------------------
 
 type percWindows struct {

@@ -1,6 +1,9 @@
 package mlow
 
-import "math"
+import (
+	"math"
+	"sync"
+)
 
 const (
 	SmplLPCOrder  = 16
@@ -145,6 +148,13 @@ func buildDctTables() dctTables {
 	return t
 }
 
+// lpcDctTables returns the DCT tables, built once: they depend on nothing but
+// constants.
+var lpcDctTables = sync.OnceValue(func() *dctTables {
+	t := buildDctTables()
+	return &t
+})
+
 // bruteDct derives the autocorrelation R[0..order] from the power spectrum via the
 // precomputed cosine sums. All accumulation in f64.
 func bruteDct(t *dctTables, f2 []float64, order int, r []float64) {
@@ -271,9 +281,9 @@ func smplLPCAnalyzeWithF2(windowed *[SmplLPCBufLen]float32) ([SmplLPCOrder + 1]f
 		f2d[i] = float64(f2[i])
 	}
 
-	tables := buildDctTables()
+	tables := lpcDctTables()
 	var r [SmplLPCOrder + 1]float64
-	bruteDct(&tables, f2d, SmplLPCOrder, r[:])
+	bruteDct(tables, f2d, SmplLPCOrder, r[:])
 
 	var rc [SmplLPCOrder]float32
 	ac2rcDbl(r[:], SmplLPCOrder, smplLPCReg, rc[:])

@@ -7,6 +7,35 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### engine/group-audio-mixer — mix by wall-clock time, not by tick count — `implemented`
+
+- The group mixer mixed one 10 ms chunk per `time.Ticker` tick, but a ticker
+  drops ticks whenever its receiver is late (a busy CPU, a GC pause). Each drop
+  left the mixer further behind real time until the 240 ms participant queues
+  filled and started discarding audio, heard as choppy group calls on slower
+  machines. `participantAudioMixClock` counts the chunks due since the mixer
+  started and each tick mixes all of them, catching up at most 120 ms after a
+  stall.
+- Validated by `TestParticipantAudioMixClockCatchesUpMissedTicks`.
+
+### mlow — encoder 4.4x faster, 90% fewer allocations — `KAT-verified`
+
+- Ports the encoder speed-ups whatsapp-rust made after the revision this
+  package was translated from (oxidezap/whatsapp-rust #1320, #1323/#1330, #1500,
+  at `1f25f7e18faf328ed0dd8f57fc22db9fd44b1964`):
+  - FFT plans: the factorization chain and every twiddle are computed once per
+    (length, sign) and shared, with the same angle arithmetic as before, instead
+    of `math.Cos`/`math.Sin` inside every butterfly. Bit-identical output.
+  - Real FFTs run as one half-length complex transform plus a recombination.
+    This rounds differently from the full-length transform, so packets are no
+    longer byte-identical to before; round-trip quality is unchanged.
+- Allocation-free hot loops, bit-identical: the FCB beam-search scratch and the
+  pitch search's buffers are reused across calls (cleared, as `make` would give
+  them), the LPC DCT tables are built once, and `addPulse`/`celpGetMaxiK` keep
+  their temporaries on the stack.
+- `BenchmarkEncode60ms` (one 60 ms frame): 7.16 ms → 1.61 ms, 1.63 MB → 170 KB and
+  3722 → 623 allocations per frame. Decode is unchanged.
+
 ### engine/mute — `Call.SetMuted` announces this client's microphone state — `implemented`
 
 - New `Call.SetMuted(bool)` / `Call.IsMuted()`, ported from the reference's

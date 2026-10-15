@@ -406,23 +406,23 @@ func SmplPitch(st *PitchEstState, ltpBuf []float32, f2 *[SmplFLen]float32, coded
 	}
 
 	offset := peDownsampDelay
-	stage1 := make([]float32, l+offset+64)
+	stage1 := st.zeroed(pitchScratchStage1, l+offset+64)
 	pePitchHpFilter(ltpBuf, stage1[offset:offset+l])
 	hpLen := l - look
-	ltpBufHp := make([]float32, hpLen)
+	ltpBufHp := st.zeroed(pitchScratchLtpBufHp, hpLen)
 	copy(ltpBufHp, stage1[offset:offset+hpLen])
 
-	stage1Ds := make([]float32, (l+offset)/2+8)
+	stage1Ds := st.zeroed(pitchScratchStage1Ds, (l+offset)/2+8)
 	stage1Len := pePitchDownsample(stage1, l+offset, stage1Ds)
 
 	numlags0 := peNumLagsStage1
-	e1 := make([]float32, numlags0*numsubfrs+16)
+	e1 := st.zeroed(pitchScratchE1, numlags0*numsubfrs+16)
 	peCalcE1(e1, stage1Ds, stage1Len, numsubfrs, peMinpitchStage1, peMaxpitchStage1, peLagSubfrlenStage1)
 	e2 := make([]float32, numsubfrs)
 	cap := (2*peFsKhz/peStage1FsKhz)*peNumLagsStage1*numsubfrs + 64
-	c := make([]float32, cap)
-	e := make([]float32, cap)
-	cStage1 := make([]float32, numlags0*numsubfrs)
+	c := st.zeroed(pitchScratchC, cap)
+	e := st.zeroed(pitchScratchE, cap)
+	cStage1 := st.zeroed(pitchScratchCStage1, numlags0*numsubfrs)
 	peCalcCE2(cStage1, e2, stage1Ds, stage1Len, numsubfrs)
 	copy(c[:numlags0*numsubfrs], cStage1)
 
@@ -455,7 +455,7 @@ func SmplPitch(st *PitchEstState, ltpBuf []float32, f2 *[SmplFLen]float32, coded
 	offsetC0 := minpitchCoarse - minpitchC
 	offsetE0 := minpitchCoarse - minpitchE
 
-	h := make([]float32, numlagsCoarse*numsubfrs*2+64)
+	h := st.zeroed(pitchScratchH, numlagsCoarse*numsubfrs*2+64)
 	for sf := 0; sf < numsubfrs; sf++ {
 		for i := 0; i < numlagsCoarse; i++ {
 			cv := c[sf*numlagsC+offsetC0+i]
@@ -499,7 +499,7 @@ func SmplPitch(st *PitchEstState, ltpBuf []float32, f2 *[SmplFLen]float32, coded
 	}
 	trackIdx := peGetMaxiK(utils, peNumstates1)
 
-	e1Fs := make([]float32, numlagsE*numsubfrs+16)
+	e1Fs := st.zeroed(pitchScratchE1Fs, numlagsE*numsubfrs+16)
 	peCalcE1(e1Fs, ltpBufHp, l-look, numsubfrs, minpitchE, minpitchE+numlagsE-1, peLagSubfrlen)
 
 	var uniqueblocks [NumSubframes]uint16
