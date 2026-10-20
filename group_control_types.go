@@ -24,11 +24,13 @@ type groupCallUpdate struct {
 }
 
 type groupCallParticipant struct {
-	JID     types.JID
-	PN      types.JID
-	State   string
-	Type    string
-	Devices []groupCallDevice
+	JID      types.JID
+	PN       types.JID
+	State    string
+	Type     string
+	PushName string
+	Guest    bool
+	Devices  []groupCallDevice
 }
 
 type groupCallDevice struct {
@@ -122,6 +124,7 @@ func groupCallUpdateFromSignaling(update signaling.GroupCallUpdate) groupCallUpd
 		out.Participants[i] = groupCallParticipant{
 			JID: participant.JID, PN: participant.PN,
 			State: participant.State, Type: participant.Type,
+			PushName: participant.PushName, Guest: participant.Guest,
 			Devices: make([]groupCallDevice, len(participant.Devices)),
 		}
 		for j, device := range participant.Devices {

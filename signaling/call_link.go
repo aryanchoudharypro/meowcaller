@@ -61,9 +61,11 @@ type WaitingRoom struct {
 
 // WaitingRoomUser is one user in a waiting-room snapshot.
 type WaitingRoomUser struct {
-	JID   types.JID
-	PN    types.JID
-	State string
+	JID      types.JID
+	PN       types.JID
+	State    string
+	PushName string
+	Guest    bool
 }
 
 // BuildCallLinkCreate builds the service request that creates a call link.
@@ -345,7 +347,9 @@ func parseWaitingRoomNode(node *waBinary.Node) (*WaitingRoom, error) {
 		userAttrs := child.AttrGetter()
 		user := WaitingRoomUser{
 			JID: userAttrs.JID("jid"), PN: userAttrs.OptionalJIDOrEmpty("user_pn"),
-			State: userAttrs.String("state"),
+			State:    userAttrs.String("state"),
+			PushName: userAttrs.OptionalString("push_name"),
+			Guest:    userAttrs.OptionalString("account_kind") == "guest",
 		}
 		if err = userAttrs.Error(); err != nil {
 			return nil, fmt.Errorf("signaling: parse waiting room user: %w", err)

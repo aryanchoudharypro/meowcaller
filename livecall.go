@@ -73,6 +73,8 @@ type GroupCallParticipant struct {
 	JID        types.JID
 	PN         types.JID
 	State      string
+	PushName   string
+	Guest      bool
 	HandRaised bool
 	Devices    []GroupCallDevice
 }
@@ -108,9 +110,11 @@ type WaitingRoomState struct {
 
 // WaitingRoomUser is one user in the authoritative pending roster.
 type WaitingRoomUser struct {
-	JID   types.JID
-	PN    types.JID
-	State string
+	JID      types.JID
+	PN       types.JID
+	State    string
+	PushName string
+	Guest    bool
 }
 
 // HandRaiseState is one participant's persistent raised/lowered state.
@@ -232,6 +236,7 @@ func groupCallStateFromUpdate(update groupCallUpdate) GroupCallState {
 		}
 		state.Participants[participantIndex] = GroupCallParticipant{
 			JID: participant.JID, PN: participant.PN, State: participant.State,
+			PushName: participant.PushName, Guest: participant.Guest,
 			Devices: devices,
 		}
 	}

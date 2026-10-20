@@ -71,11 +71,13 @@ type GroupCallUpdate struct {
 
 // GroupCallParticipant is one user in a group-call roster.
 type GroupCallParticipant struct {
-	JID     types.JID
-	PN      types.JID
-	State   string
-	Type    string
-	Devices []GroupCallDevice
+	JID      types.JID
+	PN       types.JID
+	State    string
+	Type     string
+	PushName string
+	Guest    bool
+	Devices  []GroupCallDevice
 }
 
 // GroupCallDevice is one participant device in a group-call roster.
@@ -401,6 +403,8 @@ func parseGroupParticipant(node *waBinary.Node) (GroupCallParticipant, error) {
 	participant := GroupCallParticipant{
 		JID: attrs.JID("jid"), PN: attrs.OptionalJIDOrEmpty("user_pn"),
 		State: attrs.String("state"), Type: attrs.OptionalString("type"),
+		PushName: attrs.OptionalString("push_name"),
+		Guest:    attrs.OptionalString("account_kind") == "guest",
 	}
 	if err := attrs.Error(); err != nil {
 		return participant, fmt.Errorf("signaling: parse group participant: %w", err)

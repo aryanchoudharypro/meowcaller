@@ -131,7 +131,9 @@ func TestParseGroupUpdatePreservesRosterRelayAndRekeyDirective(t *testing.T) {
 					"joinable": "1", "rekey": "1",
 				},
 				Content: []waBinary.Node{{
-					Tag: "user", Attrs: waBinary.Attrs{"jid": user, "state": "connected"},
+					Tag: "user", Attrs: waBinary.Attrs{
+						"jid": user, "state": "connected", "account_kind": "guest", "push_name": "Test Guest",
+					},
 					Content: []waBinary.Node{{
 						Tag: "device", Attrs: waBinary.Attrs{"jid": device, "pid": "22", "platform": "web"},
 					}},
@@ -166,6 +168,9 @@ func TestParseGroupUpdatePreservesRosterRelayAndRekeyDirective(t *testing.T) {
 	if len(update.Participants) != 1 || len(update.Participants[0].Devices) != 1 ||
 		update.Participants[0].Devices[0].PID != 22 {
 		t.Fatalf("participants = %+v", update.Participants)
+	}
+	if !update.Participants[0].Guest || update.Participants[0].PushName != "Test Guest" {
+		t.Fatalf("participant = %+v, want a named guest", update.Participants[0])
 	}
 	if update.Relay == nil || update.Relay.SelfPID != 11 || len(update.Relay.Endpoints) != 1 ||
 		update.Relay.Endpoints[0].RelayID != 3 || update.Relay.Endpoints[0].IPv4 != "1.2.3.4" ||

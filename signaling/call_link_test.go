@@ -95,7 +95,8 @@ func TestWaitingRoomUpdateAndAck(t *testing.T) {
 				"media": "audio", "enabled": "1", "is_admin": "1", "transaction-id": "7",
 			},
 			Content: []waBinary.Node{{Tag: "user", Attrs: waBinary.Attrs{
-				"jid": user, "state": "pending",
+				"jid": user, "state": "waiting_room_joined",
+				"account_kind": "guest", "push_name": "Test Guest",
 			}}},
 		}},
 	}
@@ -105,6 +106,9 @@ func TestWaitingRoomUpdateAndAck(t *testing.T) {
 	}
 	if !room.Enabled || !room.IsAdmin || room.TransactionID != 7 || len(room.Users) != 1 {
 		t.Fatalf("waiting room = %+v", room)
+	}
+	if got := room.Users[0]; !got.Guest || got.PushName != "Test Guest" {
+		t.Fatalf("waiting room user = %+v, want a named guest", got)
 	}
 	envelope := waBinary.Node{
 		Tag: "call", Attrs: waBinary.Attrs{"id": "REQ", "from": creator},
