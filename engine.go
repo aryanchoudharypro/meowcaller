@@ -943,11 +943,21 @@ func (e *engine) onRelay(callID string, data *waBinary.Node) {
 // relay election). It does NOT send the accept — that is deferred until <mute_v2>.
 func (e *engine) onRelayLatency(ev *events.CallRelayLatency) {
 	m := e.lookup(ev.CallID)
-	if m == nil || m.direction != CallDirectionIncoming {
+	if m == nil {
 		return
 	}
 	rl := findChild(ev.Data, "relaylatency")
 	if rl == nil {
+		return
+	}
+	e.mu.Lock()
+	linkProbe := m.group && m.link
+	e.mu.Unlock()
+	if linkProbe {
+		e.answerLinkRelayLatency(ev, rl)
+		return
+	}
+	if m.direction != CallDirectionIncoming {
 		return
 	}
 	// Only endorse relays we can actually receive on. The caller's probes

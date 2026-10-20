@@ -3,6 +3,10 @@ package meowcaller
 import (
 	"context"
 	"time"
+
+	"github.com/purpshell/meowcaller/signaling"
+	waBinary "go.mau.fi/whatsmeow/binary"
+	"go.mau.fi/whatsmeow/types/events"
 )
 
 // linkEpochFallbackDelay is how long the creator of a call-link call waits for a
@@ -59,4 +63,61 @@ func (e *engine) maybeScheduleLinkEpochFallback(callID string) {
 			e.c.log.Warn().Err(err).Str("call_id", callID).Msg("call-link epoch fallback failed")
 		}
 	})
+}
+
+// answerLinkRelayLatency answers a call-link joiner's relay latency probes.
+func (e *engine) answerLinkRelayLatency(ev *events.CallRelayLatency, rl *waBinary.Node) {
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/05168a7f47bcaa78b6af8994c8c794d943991573/wacore/src/stanza/call.rs#L1052-L1068
+	e.mu.Lock()
+	m := e.calls[ev.CallID]
+	offered := map[string]bool{}
+	if m != nil && m.groupUpdate != nil && m.groupUpdate.Relay != nil {
+		for _, endpoint := range m.groupUpdate.Relay.Endpoints {
+			if endpoint.RelayName != "" {
+				offered[endpoint.RelayName] = true
+			}
+		}
+	}
+	e.mu.Unlock()
+	for _, resp := range linkRelayLatencyReplies(ev, rl, offered) {
+		resp.Attrs["id"] = e.c.wa.GenerateMessageID()
+		if err := e.c.wa.DangerousInternals().SendNode(context.Background(), resp); err != nil {
+			e.c.log.Warn().Err(err).Str("call_id", ev.CallID).Msg("answer call-link relay latency failed")
+			return
+		}
+	}
+	e.c.log.Debug().Str("call_id", ev.CallID).Str("to", ev.From.String()).
+		Msg("answered call-link relay latency probe")
+}
+
+// linkRelayLatencyReplies builds one relaylatency reply per probed relay we
+// were also offered, echoing the probe's latency and transaction-id.
+func linkRelayLatencyReplies(ev *events.CallRelayLatency, rl *waBinary.Node, offered map[string]bool) []waBinary.Node {
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/05168a7f47bcaa78b6af8994c8c794d943991573/wacore/src/stanza/call.rs#L1052-L1068
+	transactionID, hasTransaction := rl.Attrs["transaction-id"]
+	var replies []waBinary.Node
+	for i := range rl.GetChildren() {
+		te := &rl.GetChildren()[i]
+		if te.Tag != "te" {
+			continue
+		}
+		ag := te.AttrGetter()
+		name := ag.String("relay_name")
+		if len(offered) > 0 && !offered[name] {
+			continue
+		}
+		resp := signaling.BuildRelayLatency(&signaling.RelayLatencyParams{
+			CallID:       ev.CallID,
+			To:           ev.From,
+			CallCreator:  ev.CallCreator,
+			LatencyMs:    decodeLatency(ag.String("latency")),
+			RelayName:    name,
+			AddressBytes: nodeBytes(te),
+		})
+		if action, ok := resp.Content.([]waBinary.Node); hasTransaction && ok && len(action) == 1 {
+			action[0].Attrs["transaction-id"] = transactionID
+		}
+		replies = append(replies, resp)
+	}
+	return replies
 }

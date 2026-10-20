@@ -5,8 +5,10 @@ import (
 
 	"github.com/rs/zerolog"
 	"go.mau.fi/whatsmeow"
+	waBinary "go.mau.fi/whatsmeow/binary"
 	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
+	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
 )
 
@@ -78,5 +80,40 @@ func TestLinkEpochFallbackArmsOnlyForTheCreatorWithSomeoneToKey(t *testing.T) {
 				t.Fatalf("armed = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestLinkRelayLatencyRepliesEchoOfferedRelays(t *testing.T) {
+	guest := types.NewJID("300", types.HiddenUserServer)
+	creator := types.NewADJID("100", 0, 48)
+	creator.Server = types.HiddenUserServer
+	probe := waBinary.Node{
+		Tag: "relaylatency",
+		Attrs: waBinary.Attrs{
+			"call-id": "LINK", "call-creator": creator, "transaction-id": "3",
+		},
+		Content: []waBinary.Node{
+			{Tag: "te", Attrs: waBinary.Attrs{"latency": "33555290", "relay_name": "del3c01"}, Content: []byte{1, 2, 3, 4, 5, 6}},
+			{Tag: "te", Attrs: waBinary.Attrs{"latency": "33555696", "relay_name": "elsewhere"}, Content: []byte{6, 5, 4, 3, 2, 1}},
+		},
+	}
+	ev := &events.CallRelayLatency{
+		BasicCallMeta: types.BasicCallMeta{From: guest, CallCreator: creator, CallID: "LINK"},
+	}
+	replies := linkRelayLatencyReplies(ev, &probe, map[string]bool{"del3c01": true})
+	if len(replies) != 1 {
+		t.Fatalf("replies = %d, want 1 (only the offered relay)", len(replies))
+	}
+	reply := replies[0]
+	if reply.Attrs["to"] != guest {
+		t.Fatalf("reply to = %v, want the guest", reply.Attrs["to"])
+	}
+	action := reply.GetChildren()[0]
+	if action.Tag != "relaylatency" || action.Attrs["transaction-id"] != "3" {
+		t.Fatalf("action = %+v", action)
+	}
+	te := action.GetChildren()[0]
+	if te.Attrs["relay_name"] != "del3c01" || te.Attrs["latency"] != "33555290" {
+		t.Fatalf("te = %+v", te)
 	}
 }

@@ -7,6 +7,16 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### engine/call-link — answer guests' relay latency probes — `implemented`
+
+- Browser guests in a call link send the creator one `<relaylatency>` per
+  relay (carrying the relay `transaction-id`), like a 1:1 caller electing a
+  relay, and leave after ~20 s when nothing answers. Members on WhatsApp Web
+  don't. We only answered probes on incoming 1:1 calls. Link calls now echo
+  each probe for a relay we were also offered, with its transaction-id.
+- Validated by `TestLinkRelayLatencyRepliesEchoOfferedRelays` (stanza shape);
+  whether guests then send media is unconfirmed live.
+
 ### engine — group calls are ready once our audio reaches the relay — `implemented`
 
 - `OnReady` fired only after the first inbound RTP decoded. Apps attach the
