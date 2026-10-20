@@ -1022,7 +1022,7 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 
 	buf := make([]byte, 1500)
 	rtpDedup := newRtpReplayFilter()
-	var rtpIn, rtpSeen, unprotectFail, rtpInspect, vidIn, appDataIn, appDataUnprotectFail, videoUnprotectFail, videoFrameIn, videoSinkMissing, rtcpIn, rtcpAuthFail, groupForwardingInvalid uint64
+	var rtpIn, rtpSeen, unprotectFail, rtpInspect, vidIn, appDataIn, appDataUnprotectFail, videoUnprotectFail, videoFrameIn, videoSinkMissing, rtcpIn, rtcpAuthFail, groupForwardingInvalid, stunInspect, otherInspect uint64
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -1103,6 +1103,12 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 			continue
 		case relay.RelayPacketStun:
 			mt, isStun := stun.StunMessageType(pkt)
+			if n != 20 && n != 68 && stunInspect < 20 {
+				stunInspect++
+				log.Debug().Int("packet_bytes", n).Bool("group_wrapped", groupWrapped).
+					Bool("is_stun", isStun).Uint16("stun_type", mt).
+					Msg("relay STUN-classified packet")
+			}
 			if isStun && mt == stun.MsgBindingRequest {
 				resp, answered, err := allocateState.SendBindingSuccess(pkt, func(packet []byte) error {
 					_, sendErr := ch.Send(packet)
@@ -1111,6 +1117,8 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 				if err != nil {
 					return fmt.Errorf("relay send binding-success: %w", err)
 				}
+				log.Debug().Bool("answered", answered).Int("response_bytes", len(resp)).
+					Msg("relay STUN binding request")
 				if answered {
 					e.c.diag.Emit("stun", map[string]any{
 						"event": "binding_request_answered", "response_bytes": len(resp),
@@ -1119,6 +1127,11 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 			}
 			continue
 		case relay.RelayPacketOther:
+			if otherInspect < 20 && len(pkt) > 0 {
+				otherInspect++
+				log.Debug().Int("packet_bytes", n).Bool("group_wrapped", groupWrapped).
+					Uint8("first_byte", pkt[0]).Msg("relay packet of unknown kind")
+			}
 			continue
 		}
 		if rtpSeen++; rtpSeen == 1 {

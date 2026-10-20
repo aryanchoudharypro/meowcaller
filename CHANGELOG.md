@@ -7,6 +7,15 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### engine — log unexplained relay packets — `implemented`
+
+- Browser guests in a call link still leave after ~20 s with no RTP reaching
+  us; the only traffic from them is a few 44-byte non-RTP relay packets that
+  were dropped without a trace. Inbound STUN-classified packets other than
+  the usual allocate/consent replies, binding requests we answer, and
+  unknown-kind packets now get a capped debug line (sizes and types only).
+- Diagnostics only; no behavior change.
+
 ### engine/call-link — answer guests' relay latency probes — `implemented`
 
 - Browser guests in a call link send the creator one `<relaylatency>` per
