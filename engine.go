@@ -98,8 +98,11 @@ type engineCall struct {
 	started              bool
 	cancel               context.CancelFunc // tears down this call's media goroutine
 	waitingRoomCancel    context.CancelFunc
-	inviteSelfDevice     groupCallDevice
-	invitePeerDevice     groupCallDevice
+	// heartbeatCancel stops the in-call heartbeat. The server ends a group
+	// call whose members stop sending it, about a minute in.
+	heartbeatCancel  context.CancelFunc
+	inviteSelfDevice groupCallDevice
+	invitePeerDevice groupCallDevice
 
 	// acceptPending guards sendAccept against sending <accept> twice for the same call.
 	acceptPending bool
@@ -1528,7 +1531,7 @@ func (e *engine) finishCall(callID, reason string) {
 	if m != nil {
 		delete(e.calls, callID)
 	}
-	var cancel, waitingRoomCancel context.CancelFunc
+	var cancel, waitingRoomCancel, heartbeatCancel context.CancelFunc
 	var call *Call
 	var receivers *participantReceiveRegistry
 	if m != nil {
@@ -1536,6 +1539,8 @@ func (e *engine) finishCall(callID, reason string) {
 		m.cancel = nil
 		waitingRoomCancel = m.waitingRoomCancel
 		m.waitingRoomCancel = nil
+		heartbeatCancel = m.heartbeatCancel
+		m.heartbeatCancel = nil
 		clear(m.groupRawEpoch)
 		m.groupRawEpoch = nil
 		receivers = m.groupReceivers
@@ -1551,6 +1556,9 @@ func (e *engine) finishCall(callID, reason string) {
 	}
 	if waitingRoomCancel != nil {
 		waitingRoomCancel()
+	}
+	if heartbeatCancel != nil {
+		heartbeatCancel()
 	}
 	if call == nil || call.State() == CallPhaseEnded {
 		return

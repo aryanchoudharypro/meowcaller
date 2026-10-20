@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/purpshell/meowcaller/signaling"
 	"github.com/rs/zerolog"
@@ -417,4 +418,59 @@ func TestStartScreenShareNeedsAVideoGroupWithLocalVideo(t *testing.T) {
 	if sent != 0 {
 		t.Fatalf("sent %d screen-share stanzas for refused starts", sent)
 	}
+}
+
+func TestConnectedGroupMemberSendsCallHeartbeatUntilTheCallEnds(t *testing.T) {
+	eng, _, creator := testGroupEngine("GROUP")
+	self := types.NewADJID("300", 0, 48)
+	eng.calls["GROUP"].selfLID = self.String()
+	heartbeats := make(chan waBinary.Node, 8)
+	eng.sendCallNode = func(_ context.Context, node waBinary.Node) error {
+		if children := node.GetChildren(); len(children) == 1 && children[0].Tag == "heartbeat" {
+			heartbeats <- node
+		}
+		return nil
+	}
+	update := func(txID uint32, state string) groupCallUpdate {
+		return groupCallUpdate{
+			CallID: "GROUP", CallCreator: creator, TransactionID: txID, Media: "audio",
+			Participants: []groupCallParticipant{{
+				JID: self.ToNonAD(), State: state,
+				Devices: []groupCallDevice{{JID: self, PID: 0, HasPID: true}},
+			}},
+		}
+	}
+
+	eng.applyGroupUpdate(update(1, "ringing"))
+	select {
+	case node := <-heartbeats:
+		t.Fatalf("heartbeat before joining: %#v", node)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	eng.applyGroupUpdate(update(2, "connected"))
+	eng.applyGroupUpdate(update(3, "connected"))
+	select {
+	case node := <-heartbeats:
+		action := node.GetChildren()[0]
+		if node.Attrs["to"] != "GROUP@call" || action.Attrs["call-id"] != "GROUP" ||
+			action.Attrs["call-creator"] != creator {
+			t.Fatalf("heartbeat = %#v", node)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no heartbeat after joining")
+	}
+	select {
+	case node := <-heartbeats:
+		t.Fatalf("second roster started another heartbeat: %#v", node)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	eng.mu.Lock()
+	running := eng.calls["GROUP"].heartbeatCancel != nil
+	eng.mu.Unlock()
+	if !running {
+		t.Fatal("heartbeat is not tracked on the call")
+	}
+	eng.finishCall("GROUP", "hangup")
 }

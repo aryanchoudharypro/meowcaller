@@ -613,6 +613,44 @@ func (e *engine) startWaitingRoomHeartbeat(callID string) {
 	}()
 }
 
+// callHeartbeatInterval is WhatsApp's heartbeat_interval_s default.
+const callHeartbeatInterval = 10 * time.Second
+
+// runCallHeartbeat sends <heartbeat> to the call every callHeartbeatInterval
+// while this device is a connected member. WA Web's VoIP engine does the same;
+// without it the server ends the call with group_call_ended about a minute in,
+// even with other members still talking.
+func (e *engine) runCallHeartbeat(ctx context.Context, callID string, creator types.JID) {
+	e.c.log.Debug().Str("call_id", callID).Msg("starting call heartbeat")
+	ticker := time.NewTicker(callHeartbeatInterval)
+	defer ticker.Stop()
+	for {
+		node := signaling.BuildHeartbeat(callID, creator, e.nextCallNodeID())
+		if err := e.transmitCallNode(ctx, node); err != nil && ctx.Err() == nil {
+			e.c.log.Debug().Err(err).Str("call_id", callID).Msg("call heartbeat failed")
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+// selfConnected reports whether this account is a connected member in update.
+func selfConnected(update groupCallUpdate, selfLID string) bool {
+	self, err := types.ParseJID(selfLID)
+	if err != nil || self.User == "" {
+		return false
+	}
+	for _, participant := range update.Participants {
+		if participant.State == "connected" && participant.JID.User == self.User {
+			return true
+		}
+	}
+	return false
+}
+
 func valueOrZero(value *uint32) uint32 {
 	// Source of truth: https://github.com/purpshell/meowcaller/blob/36d54857c74e45ccb08f6444a32d2afa13f20be9/datasheets/group-video-reactions.md#L44-L56
 	if value == nil {

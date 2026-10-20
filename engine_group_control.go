@@ -256,6 +256,12 @@ func (e *engine) applyGroupUpdate(update groupCallUpdate) (groupCallUpdate, grou
 	call := m.call
 	waitingRoomCancel := m.waitingRoomCancel
 	m.waitingRoomCancel = nil
+	startHeartbeat := m.heartbeatCancel == nil && selfConnected(stored, m.selfLID)
+	if startHeartbeat {
+		var heartbeatCtx context.Context
+		heartbeatCtx, m.heartbeatCancel = context.WithCancel(context.Background())
+		go e.runCallHeartbeat(heartbeatCtx, update.CallID, m.creator)
+	}
 	e.mu.Unlock()
 	e.c.log.Debug().
 		Str("call_id", update.CallID).

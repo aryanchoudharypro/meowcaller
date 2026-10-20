@@ -7,6 +7,19 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### engine — in-call heartbeat for group calls — `implemented`
+
+- Group calls were ended by the server with `group_call_ended` about a minute
+  after we joined, even with another member connected and audio flowing both
+  ways (live 2026-10-20: a WhatsApp Web member joined a link call, the call
+  ended 62 s later with both shown connected). We never sent the
+  `<heartbeat>` that WA Web's VoIP engine sends every `heartbeat_interval_s`
+  (default 10 s). The engine now sends it to `<call-id>@call` once this
+  account shows up as `connected` in the roster, every 10 s until the call
+  ends. `BuildHeartbeat` existed but had no caller.
+- Validated by `TestConnectedGroupMemberSendsCallHeartbeatUntilTheCallEnds`;
+  not yet confirmed on a live call.
+
 ### signaling/engine — pre-key group epochs carry our device identity — `implemented`
 
 - A group `enc_rekey` encrypted as `pkmsg` (a fresh Signal session) went out
