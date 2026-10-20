@@ -418,6 +418,7 @@ func (e *engine) joinPublicCallLink(
 	m := e.entry(result.CallID)
 	m.call = call
 	m.group = true
+	m.link = true
 	m.selfLID = e.c.wa.Store.GetLID().String()
 	m.peerLID = result.CallCreator.String()
 	m.creator = result.CallCreator

@@ -31,10 +31,13 @@ func (e *engine) onUnknownCallEvent(node *waBinary.Node) {
 		// Only a fresh committed roster requests an epoch: a relay-only adoption
 		// must not replay its (older) carrying roster's rekey request. The fan-out
 		// goes to the committed, PID-stabilized participants.
-		if committed, outcome := e.applyGroupUpdate(update); outcome == groupUpdateApplied && update.RekeyRequested {
+		committed, outcome := e.applyGroupUpdate(update)
+		if outcome == groupUpdateApplied && update.RekeyRequested {
 			if fanoutErr := e.distributeRequestedGroupEpoch(context.Background(), committed); fanoutErr != nil {
 				e.c.log.Warn().Err(fanoutErr).Str("call_id", update.CallID).Msg("group rekey fanout failed")
 			}
+		} else if outcome != groupUpdateStale {
+			e.maybeScheduleLinkEpochFallback(update.CallID)
 		}
 	case "waiting_room_update":
 		room, parseErr := signaling.ParseWaitingRoomUpdate(&envelope.Action)

@@ -7,6 +7,22 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### engine/call-link — link calls connect before their key and key themselves — `implemented`
+
+- A call-link call only gets a relay once someone else joins, and the key
+  epoch was expected from that joiner. Media waited for both, so when no
+  `enc_rekey` arrived (seen live: a WhatsApp Web friend joined our link, the
+  roster showed them connected with PIDs, no rekey came from anyone) neither
+  side ever connected and the call stayed silent until the friend left.
+- Link calls now connect to the relay as soon as it arrives, with outbound
+  audio gated until an epoch installs, as whatsapp-rust does
+  (`MediaSessionSpec` with a zeroed key, gated until `apply_group_raw_epoch`).
+- When this account created the link and no epoch has arrived 4 s after a
+  roster with a remote PID device, it distributes one itself through the
+  existing `enc_rekey` fan-out. Not yet confirmed against a real phone.
+- Validated by `TestLinkCallMediaIsGatedUntilItsFirstEpoch` and
+  `TestLinkEpochFallbackArmsOnlyForTheCreatorWithSomeoneToKey`.
+
 ### engine/group-audio-mixer — mix by wall-clock time, not by tick count — `implemented`
 
 - The group mixer mixed one 10 ms chunk per `time.Ticker` tick, but a ticker

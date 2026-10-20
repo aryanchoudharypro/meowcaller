@@ -86,16 +86,20 @@ type engineCall struct {
 	appDataTx          *appDataSender
 	rekeyPeer          func(string) error
 	group              bool
-	groupUpdate        *groupCallUpdate
-	groupReceivers     *participantReceiveRegistry
-	groupRawEpoch      []byte
-	groupEpochTxID     uint32
-	hasGroupEpoch      bool
-	started            bool
-	cancel             context.CancelFunc // tears down this call's media goroutine
-	waitingRoomCancel  context.CancelFunc
-	inviteSelfDevice   groupCallDevice
-	invitePeerDevice   groupCallDevice
+	// link marks a call joined through a call link. Its key epoch can arrive
+	// after the relay, so media connects first and stays gated until it does.
+	link                 bool
+	linkEpochFallbackSet bool
+	groupUpdate          *groupCallUpdate
+	groupReceivers       *participantReceiveRegistry
+	groupRawEpoch        []byte
+	groupEpochTxID       uint32
+	hasGroupEpoch        bool
+	started              bool
+	cancel               context.CancelFunc // tears down this call's media goroutine
+	waitingRoomCancel    context.CancelFunc
+	inviteSelfDevice     groupCallDevice
+	invitePeerDevice     groupCallDevice
 
 	// acceptPending guards sendAccept against sending <accept> twice for the same call.
 	acceptPending bool

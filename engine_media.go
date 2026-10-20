@@ -47,7 +47,8 @@ func (e *engine) maybeStartMedia(callID string) {
 		e.mu.Unlock()
 		return
 	}
-	if m.group && (!m.hasGroupEpoch || len(m.groupRawEpoch) != 32 ||
+	keyPending := m.group && m.link && !m.hasGroupEpoch
+	if m.group && (!keyPending && (!m.hasGroupEpoch || len(m.groupRawEpoch) != 32) ||
 		m.groupUpdate == nil || m.groupUpdate.Relay == nil) {
 		e.c.log.Debug().
 			Str("call_id", callID).
@@ -90,7 +91,12 @@ func (e *engine) maybeStartMedia(callID string) {
 		call.negotiatedOpus.Store(m.codec == AudioCodecOpus)
 	}
 	var callKey []byte
-	if m.group {
+	if keyPending {
+		// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/05168a7f47bcaa78b6af8994c8c794d943991573/wacore/src/voip_control/spec_build.rs#L43-L44
+		// A placeholder until the shared epoch lands; outbound audio stays gated meanwhile.
+		callKey = make([]byte, 32)
+		_, _ = rand.Read(callKey)
+	} else if m.group {
 		callKey = append([]byte(nil), m.groupRawEpoch...)
 	} else {
 		callKey = append([]byte(nil), m.callKey...)
@@ -102,7 +108,7 @@ func (e *engine) maybeStartMedia(callID string) {
 	if call != nil {
 		call.setPhase(CallPhaseConnecting)
 	}
-	e.c.log.Info().Str("call_id", callID).Msg("starting media")
+	e.c.log.Info().Str("call_id", callID).Bool("key_pending", keyPending).Msg("starting media")
 	go func() {
 		defer clear(callKey)
 		if err := e.runMedia(mctx, callID, call, callKey, selfLID, peerLID, rd, inbound); err != nil {
@@ -412,16 +418,17 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 				e.mu.Lock()
 				current := e.calls[callID]
 				if current == nil || !current.group || current.groupUpdate == nil ||
-					!current.hasGroupEpoch || len(current.groupRawEpoch) != 32 {
+					(current.hasGroupEpoch || !current.link) && len(current.groupRawEpoch) != 32 {
 					e.mu.Unlock()
 					return fmt.Errorf("meowcaller: group media prerequisites changed during startup")
 				}
 				update := cloneGroupCallUpdate(*current.groupUpdate)
+				hasEpoch := current.hasGroupEpoch
 				rawEpoch := append([]byte(nil), current.groupRawEpoch...)
 				transactionID := current.groupEpochTxID
 				e.mu.Unlock()
 
-				if err = audioReceivers.ApplyGroupUpdate(update); err == nil {
+				if err = audioReceivers.ApplyGroupUpdate(update); err == nil && hasEpoch {
 					err = audioReceivers.ApplyGroupRawEpoch(transactionID, rawEpoch)
 				}
 				clear(rawEpoch)
@@ -752,6 +759,9 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 				if f, encoded := player.nextFrameOpus(); f != nil && !call.IsMuted() {
 					frame, opusFrame = f, encoded
 				}
+			}
+			if e.groupKeyPending(callID) {
+				continue
 			}
 			var payload []byte
 			if call.sendsStandardOpus() && !groupMode.Load() {
