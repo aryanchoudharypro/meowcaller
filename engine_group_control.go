@@ -410,10 +410,18 @@ func (e *engine) distributeRequestedGroupEpoch(ctx context.Context, update group
 	}
 	nodes := make([]waBinary.Node, len(recipients))
 	for i, recipient := range recipients {
-		ciphertext, encType, _, err := encryptCallKeyForDevice(ctx, e.c.wa, recipient, rawKey)
+		ciphertext, encType, needIdentity, err := encryptCallKeyForDevice(ctx, e.c.wa, recipient, rawKey)
 		if err != nil {
 			clear(rawKey)
 			return fmt.Errorf("meowcaller: encrypt group epoch for %s: %w", recipient, err)
+		}
+		// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/05168a7f47bcaa78b6af8994c8c794d943991573/wacore/src/stanza/group_call.rs#L579-L597
+		var deviceIdentity []byte
+		if needIdentity {
+			if deviceIdentity, err = proto.Marshal(e.c.wa.Store.Account); err != nil {
+				clear(rawKey)
+				return fmt.Errorf("meowcaller: marshal device identity: %w", err)
+			}
 		}
 		node, err := signaling.BuildGroupEncRekey(signaling.GroupEncRekeyParams{
 			CallID: update.CallID, To: recipient, CallCreator: update.CallCreator,
@@ -421,6 +429,7 @@ func (e *engine) distributeRequestedGroupEpoch(ctx context.Context, update group
 			DeviceKey: signaling.OfferDeviceKey{
 				DeviceJid: recipient, Ciphertext: ciphertext, EncType: encType,
 			},
+			DeviceIdentity: deviceIdentity,
 		})
 		if err != nil {
 			clear(rawKey)

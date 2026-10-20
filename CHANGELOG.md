@@ -7,6 +7,18 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### signaling/engine — pre-key group epochs carry our device identity — `implemented`
+
+- A group `enc_rekey` encrypted as `pkmsg` (a fresh Signal session) went out
+  without `<device-identity>`. WhatsApp clients drop a pre-key envelope
+  without the sender's ADV identity. Browser guests are always a fresh
+  session, so they never accepted our key (live: no ack on any of five
+  `enc_rekey`s to guests, while a WhatsApp Web member acked `msg` ones in
+  ~200 ms), never sent media, and left after ~20 s. `BuildGroupEncRekey` now
+  appends `<device-identity>` and refuses a `pkmsg` epoch without one, as
+  whatsapp-rust does.
+- Validated by `TestPrekeyGroupRekeyCarriesDeviceIdentity`.
+
 ### engine — log unexplained relay packets — `implemented`
 
 - Browser guests in a call link still leave after ~20 s with no RTP reaching

@@ -520,6 +520,8 @@ type GroupEncRekeyParams struct {
 	TransactionID uint32
 	RequestID     string
 	DeviceKey     OfferDeviceKey
+	// DeviceIdentity is our ADV account identity, required with a pkmsg key.
+	DeviceIdentity []byte
 }
 
 // BuildGroupEncRekey builds one keygen-v2 group epoch stanza.
@@ -535,16 +537,24 @@ func BuildGroupEncRekey(params GroupEncRekeyParams) (waBinary.Node, error) {
 	if params.DeviceKey.EncType != "msg" && params.DeviceKey.EncType != "pkmsg" {
 		return waBinary.Node{}, fmt.Errorf("signaling: build group rekey: unsupported encryption type %q", params.DeviceKey.EncType)
 	}
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/05168a7f47bcaa78b6af8994c8c794d943991573/wacore/src/stanza/group_call.rs#L579-L597
+	if params.DeviceKey.EncType == "pkmsg" && len(params.DeviceIdentity) == 0 {
+		return waBinary.Node{}, fmt.Errorf("signaling: build group rekey: pre-key epoch requires device identity")
+	}
+	children := []waBinary.Node{
+		{Tag: "encopt", Attrs: waBinary.Attrs{"keygen": "2"}},
+		{Tag: "enc", Attrs: waBinary.Attrs{"v": "2", "type": params.DeviceKey.EncType, "count": "0"}, Content: bytes.Clone(params.DeviceKey.Ciphertext)},
+	}
+	if len(params.DeviceIdentity) > 0 {
+		children = append(children, waBinary.Node{Tag: "device-identity", Content: bytes.Clone(params.DeviceIdentity)})
+	}
 	action := waBinary.Node{
 		Tag: "enc_rekey",
 		Attrs: waBinary.Attrs{
 			"call-id": params.CallID, "call-creator": params.CallCreator,
 			"transaction-id": strconv.FormatUint(uint64(params.TransactionID), 10),
 		},
-		Content: []waBinary.Node{
-			{Tag: "encopt", Attrs: waBinary.Attrs{"keygen": "2"}},
-			{Tag: "enc", Attrs: waBinary.Attrs{"v": "2", "type": params.DeviceKey.EncType, "count": "0"}, Content: bytes.Clone(params.DeviceKey.Ciphertext)},
-		},
+		Content: children,
 	}
 	return callWrap(params.To, &params.RequestID, action), nil
 }

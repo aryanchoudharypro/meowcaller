@@ -2,6 +2,7 @@ package signaling
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 
 	waBinary "go.mau.fi/whatsmeow/binary"
@@ -282,5 +283,34 @@ func TestParseCallControlEnvelopeRejectsRekeyWithInvalidTimestamp(t *testing.T) 
 	}
 	if envelope.Timestamp.Unix() != 1766847151 {
 		t.Fatalf("timestamp = %v, want 1766847151", envelope.Timestamp)
+	}
+}
+
+func TestPrekeyGroupRekeyCarriesDeviceIdentity(t *testing.T) {
+	creator := types.JID{User: "100001", Server: types.HiddenUserServer, Device: 1}
+	target := types.NewJID("200002", types.HiddenUserServer)
+	params := GroupEncRekeyParams{
+		CallID: "CID", To: target, CallCreator: creator, TransactionID: 10, RequestID: "REQ",
+		DeviceKey: OfferDeviceKey{DeviceJid: target, EncType: "pkmsg", Ciphertext: []byte{4, 5, 6}},
+	}
+	if _, err := BuildGroupEncRekey(params); err == nil {
+		t.Fatal("a pkmsg epoch without our device identity must be refused")
+	}
+	params.DeviceIdentity = []byte{7, 8, 9}
+	call, err := BuildGroupEncRekey(params)
+	if err != nil {
+		t.Fatalf("BuildGroupEncRekey: %v", err)
+	}
+	action := contentNodes(t, call)[0]
+	var tags []string
+	for _, child := range action.GetChildren() {
+		tags = append(tags, child.Tag)
+	}
+	if strings.Join(tags, ",") != "encopt,enc,device-identity" {
+		t.Fatalf("children = %v", tags)
+	}
+	identity, _ := action.GetOptionalChildByTag("device-identity")
+	if !bytes.Equal(identity.Content.([]byte), []byte{7, 8, 9}) {
+		t.Fatal("device identity bytes not carried")
 	}
 }
