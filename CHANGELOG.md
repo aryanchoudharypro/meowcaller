@@ -7,6 +7,15 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### call-link — voice links use WhatsApp's `/voice/` path — `implemented`
+
+- `CreateCallLink` built voice links as `call.whatsapp.com/audio/<token>`,
+  copying the signaling media word. WhatsApp's own voice links are
+  `call.whatsapp.com/voice/<token>` (Baileys `CALL_AUDIO_PREFIX`), and the
+  `/audio/` page is a 404 for whoever opens it. `JoinCallLink` and
+  `PreviewCallLink` now also accept `/voice/` URLs.
+- Validated by `TestCallLinkTokenNormalizationAndPublicURL`.
+
 ### engine/call-link — link calls connect before their key and key themselves — `implemented`
 
 - A call-link call only gets a relay once someone else joins, and the key

@@ -118,9 +118,16 @@ func selectedCallLinkMedia(opts CallLinkOptions) callLinkMedia {
 
 func publicCallLink(token string, media callLinkMedia) CallLink {
 	// Source of truth: https://github.com/tulir/whatsmeow/blob/3775fbadf88fdf44ada62ae5c5db5d7cc6f26259/types/call.go#L26-L38
+	// Source of truth: https://github.com/WhiskeySockets/Baileys/blob/0af2386292907f7d9742d8d41f830d8c48208fa1/src/Defaults/index.ts#L12-L13
+	// The signaling media word is "audio", but WhatsApp's own voice links use
+	// "voice"; call.whatsapp.com/audio/<token> is a 404 for whoever opens it.
+	path := "voice"
+	if media == callLinkMediaVideo {
+		path = "video"
+	}
 	return CallLink{
 		Token: token,
-		URL:   fmt.Sprintf("https://call.whatsapp.com/%s/%s", media, token),
+		URL:   fmt.Sprintf("https://call.whatsapp.com/%s/%s", path, token),
 		Video: media == callLinkMediaVideo,
 	}
 }
@@ -143,7 +150,7 @@ func normalizeCallLinkToken(raw string) (string, error) {
 	}
 	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
 	if len(parts) != 2 ||
-		(parts[0] != string(callLinkMediaAudio) && parts[0] != string(callLinkMediaVideo)) ||
+		(parts[0] != "voice" && parts[0] != string(callLinkMediaAudio) && parts[0] != string(callLinkMediaVideo)) ||
 		parts[1] == "" {
 		return "", errors.New("meowcaller: invalid WhatsApp call-link URL")
 	}
