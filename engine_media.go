@@ -340,6 +340,18 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 		isGroup = mm.group
 	}
 	e.mu.Unlock()
+	var readyOnce sync.Once
+	markReady := func() {
+		readyOnce.Do(func() {
+			if call == nil {
+				return
+			}
+			call.setPhase(CallPhaseActive)
+			if fn := call.onReadyFn(); fn != nil {
+				fn()
+			}
+		})
+	}
 
 	ch, err := e.connectAndAllocateAll(ctx, rd, streamSsrcs, inbound, !isGroup)
 	if err != nil {
@@ -797,6 +809,9 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 			if txCount++; txCount == 1 {
 				log.Info().Int("bytes", len(packet)).Msg("first RTP sent to relay, outbound media flowing")
 				e.c.diag.Emit("meta", map[string]any{"event": "first_rtp_sent", "call_id": callID, "bytes": len(packet)})
+				if isGroup {
+					markReady()
+				}
 			}
 		}
 	}()
@@ -1368,12 +1383,7 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 		if rtpIn++; rtpIn == 1 {
 			log.Info().Msg("first RTP decoded from relay, inbound audio flowing")
 			e.c.diag.Emit("meta", map[string]any{"event": "first_rtp_in", "call_id": callID})
-			if call != nil {
-				call.setPhase(CallPhaseActive)
-				if fn := call.onReadyFn(); fn != nil {
-					fn()
-				}
-			}
+			markReady()
 		}
 	}
 }

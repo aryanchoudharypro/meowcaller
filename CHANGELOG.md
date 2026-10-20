@@ -7,6 +7,15 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### engine — group calls are ready once our audio reaches the relay — `implemented`
+
+- `OnReady` fired only after the first inbound RTP decoded. Apps attach the
+  microphone in `OnReady`, so in a group call where nobody had spoken yet we
+  sent pure silence (live log: 1413 encoded sub-frames, all zero pulses) and
+  the app never showed the call as connected. Group calls now fire `OnReady`
+  on the first keyed RTP we send; 1:1 calls are unchanged. It fires once.
+- Covered by the existing engine suite only; no new vector.
+
 ### call-link — voice links use WhatsApp's `/voice/` path — `implemented`
 
 - `CreateCallLink` built voice links as `call.whatsapp.com/audio/<token>`,
