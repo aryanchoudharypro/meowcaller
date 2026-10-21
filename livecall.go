@@ -365,18 +365,19 @@ func (c *Call) SetHandRaised(raised bool) error {
 	return c.eng.setHandRaised(c.id, raised)
 }
 
-// ErrScreenShareNeedsGroupCall is returned when a screen share is announced on
-// a call that has no group roster. The screen_share action is only known for
-// group calls; a 1:1 call can still send display frames as its video.
-var ErrScreenShareNeedsGroupCall = errors.New("meowcaller: screen sharing is only announced on group calls")
+// ErrScreenShareNeedsGroupCall is returned when a screen share is announced
+// before there is anyone to tell: a 1:1 call nobody has answered yet, or a
+// group call with no roster. Despite the name, answered 1:1 calls announce
+// screen shares too.
+var ErrScreenShareNeedsGroupCall = errors.New("meowcaller: screen sharing needs an answered call")
 
 // ErrScreenShareNeedsVideo is returned when a screen share is started on a
 // group call that is audio-only or whose local video is not flowing yet.
 var ErrScreenShareNeedsVideo = errors.New("meowcaller: screen sharing requires an active local video plane")
 
 // StartScreenShare announces a version-2 screen share. The display frames ride
-// the call's video plane, so the call must be a video group call with this
-// client's video already on.
+// the call's video plane, so this client's video must already be on (and a
+// group call must be a video call).
 func (c *Call) StartScreenShare(screenShareID *uint32) error {
 	return c.eng.setScreenShare(c.id, true, screenShareID)
 }

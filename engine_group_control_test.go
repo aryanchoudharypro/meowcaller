@@ -474,3 +474,39 @@ func TestConnectedGroupMemberSendsCallHeartbeatUntilTheCallEnds(t *testing.T) {
 	}
 	eng.finishCall("GROUP", "hangup")
 }
+
+func TestOneToOneScreenShareIsAnnouncedToThePeer(t *testing.T) {
+	eng, call := testEngineWithIncomingCall("CID")
+	var sent []waBinary.Node
+	eng.sendCallNode = func(_ context.Context, node waBinary.Node) error {
+		sent = append(sent, node)
+		return nil
+	}
+	m := eng.calls["CID"]
+	m.localVideo = true
+	if err := call.StartScreenShare(nil); !errors.Is(err, ErrScreenShareNeedsGroupCall) {
+		t.Fatalf("unanswered call: err = %v", err)
+	}
+	m.acceptSent = true
+	m.localVideo = false
+	if err := call.StartScreenShare(nil); !errors.Is(err, ErrScreenShareNeedsVideo) {
+		t.Fatalf("camera off: err = %v", err)
+	}
+	if len(sent) != 0 {
+		t.Fatalf("sent %d stanzas for refused starts", len(sent))
+	}
+	m.localVideo = true
+	if err := call.StartScreenShare(nil); err != nil {
+		t.Fatalf("StartScreenShare: %v", err)
+	}
+	if len(sent) != 1 {
+		t.Fatalf("sent %d stanzas, want 1", len(sent))
+	}
+	if to, _ := sent[0].Attrs["to"].(types.JID); to != peerJID() {
+		t.Fatalf("to = %v, want the peer %v", sent[0].Attrs["to"], peerJID())
+	}
+	share := sent[0].GetChildren()[0]
+	if share.Tag != "screen_share" || share.Attrs["screenshare_state"] != "1" || share.Attrs["version"] != "2" {
+		t.Fatalf("screen_share = %+v", share)
+	}
+}

@@ -135,10 +135,17 @@ func (e *engine) dispatchRemoteScreenShare(
 	var call *Call
 	var participant types.JID
 	authorized, videoCall := false, false
-	if m != nil {
+	if m != nil && m.group {
 		call = m.call
 		participant, authorized = canonicalGroupParticipant(m.groupUpdate, callControlParticipant(envelope))
 		videoCall = m.groupUpdate != nil && m.groupUpdate.Media == "video"
+	} else if m != nil {
+		// A 1:1 peer announces its share to us directly.
+		call = m.call
+		participant = callControlParticipant(envelope)
+		authorized = participant.User != "" &&
+			(participant.User == m.from.User || participant.User == m.peerBareJID.User)
+		videoCall = true
 	}
 	e.mu.Unlock()
 	if call == nil {

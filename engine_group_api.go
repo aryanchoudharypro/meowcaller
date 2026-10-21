@@ -531,9 +531,19 @@ func (e *engine) setScreenShare(callID string, active bool, screenShareID *uint3
 	e.mu.Lock()
 	m := e.calls[callID]
 	group := m != nil && m.group && m.groupUpdate != nil
-	videoPlane := group && m.groupUpdate.Media == "video" && m.localVideo && !m.videoGate
+	oneToOne := m != nil && !m.group
+	videoPlane := m != nil && m.localVideo && !m.videoGate && (oneToOne || group && m.groupUpdate.Media == "video")
 	e.mu.Unlock()
-	if !group {
+	// WA Web's share button has no group check: on a 1:1 call its VoIP
+	// engine sends the same <screen_share> to the peer, as with mute_v2.
+	to := types.NewJID(callID, "call")
+	if oneToOne {
+		peer, _, answered := e.muteTarget(callID)
+		if !answered {
+			return ErrScreenShareNeedsGroupCall
+		}
+		to = peer
+	} else if !group {
 		return ErrScreenShareNeedsGroupCall
 	}
 	if active && !videoPlane {
@@ -545,7 +555,7 @@ func (e *engine) setScreenShare(callID string, active bool, screenShareID *uint3
 	}
 	node := signaling.BuildScreenShare(
 		callID,
-		types.NewJID(callID, "call"),
+		to,
 		creator,
 		e.nextCallNodeID(),
 		state,
