@@ -271,60 +271,7 @@ func (e *engine) transmitCallNode(ctx context.Context, node waBinary.Node) error
 	if e.sendCallNode == nil {
 		return errors.New("meowcaller: call signaling is unavailable")
 	}
-	return e.sendCallNode(ctx, e.withLinkCallNotify(node))
-}
-
-// withLinkCallNotify puts our push name on the action child of a call-link
-// stanza as notify. A guest on WhatsApp Web has no contact list and the server
-// sends push names only for other guests, so WA Web learns a signed-in
-// member's name from this attribute alone (WAWebHandleVoipCall reads the first
-// child's notify as caller_push_name and WAWebVoipLidUtils stores it as the
-// sender's push name). Without it guests see "Unknown user".
-//
-// Only stanzas to a participant carry it. The server drops anything it
-// handles itself (to "call" or "<call-id>@call") that has the attribute,
-// without an ack: heartbeats stop counting and the call ends a minute in,
-// and waiting-room admits never let anyone in.
-func (e *engine) withLinkCallNotify(node waBinary.Node) waBinary.Node {
-	if node.Tag != "call" || e.c == nil || e.c.wa == nil || e.c.wa.Store == nil || e.c.wa.Store.PushName == "" {
-		return node
-	}
-	if !stanzaToParticipant(node) {
-		return node
-	}
-	children, ok := node.Content.([]waBinary.Node)
-	if !ok || len(children) != 1 {
-		return node
-	}
-	callID, _ := children[0].Attrs["call-id"].(string)
-	e.mu.Lock()
-	m := e.calls[callID]
-	link := m != nil && m.link
-	e.mu.Unlock()
-	if !link {
-		return node
-	}
-	child := children[0]
-	attrs := make(waBinary.Attrs, len(child.Attrs)+1)
-	for k, v := range child.Attrs {
-		attrs[k] = v
-	}
-	attrs["notify"] = e.c.wa.Store.PushName
-	child.Attrs = attrs
-	node.Content = []waBinary.Node{child}
-	return node
-}
-
-// stanzaToParticipant reports whether a call stanza is addressed to a user's
-// device rather than to the server's call service.
-func stanzaToParticipant(node waBinary.Node) bool {
-	switch to := node.Attrs["to"].(type) {
-	case types.JID:
-		return to.Server == types.HiddenUserServer || to.Server == types.DefaultUserServer
-	case string:
-		return strings.HasSuffix(to, "@"+types.HiddenUserServer) || strings.HasSuffix(to, "@"+types.DefaultUserServer)
-	}
-	return false
+	return e.sendCallNode(ctx, node)
 }
 
 func (e *engine) nextCallNodeID() string {
