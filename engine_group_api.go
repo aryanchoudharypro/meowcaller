@@ -382,7 +382,7 @@ func (e *engine) joinPublicCallLink(
 	}
 	media := selectedCallLinkMedia(opts)
 	requestID := e.nextCallNodeID()
-	node, err := signaling.BuildCallLinkJoin(token, signaling.CallLinkMedia(media), requestID)
+	node, err := signaling.BuildCallLinkJoin(token, signaling.CallLinkMedia(media), e.c.wa.Store.PushName, requestID)
 	if err != nil {
 		return nil, err
 	}

@@ -20,12 +20,22 @@ func TestCallLinkBuildersMatchCapturedRoutes(t *testing.T) {
 		t.Fatalf("create action = %+v", action)
 	}
 
-	join, err := BuildCallLinkJoin("TOKEN", CallLinkMediaVideo, "REQ2")
+	join, err := BuildCallLinkJoin("TOKEN", CallLinkMediaVideo, "Aryan", "REQ2")
 	if err != nil {
 		t.Fatalf("BuildCallLinkJoin: %v", err)
 	}
 	if got := childTags(t, join); !eqTags(got, []string{"audio", "video", "net", "capability"}) {
 		t.Fatalf("join children = %v", got)
+	}
+	if got := contentNodes(t, join)[0].Attrs["push_name"]; got != "Aryan" {
+		t.Fatalf("join push_name = %v", got)
+	}
+	anonymous, err := BuildCallLinkJoin("TOKEN", CallLinkMediaAudio, "", "REQ6")
+	if err != nil {
+		t.Fatalf("BuildCallLinkJoin without a name: %v", err)
+	}
+	if _, ok := contentNodes(t, anonymous)[0].Attrs["push_name"]; ok {
+		t.Fatal("join with no push name still wrote push_name")
 	}
 
 	creator := types.JID{User: "100001", Server: types.HiddenUserServer, Device: 1}

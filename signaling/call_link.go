@@ -92,7 +92,9 @@ func BuildCallLinkQuery(token string, media CallLinkMedia, requestID string) (wa
 }
 
 // BuildCallLinkJoin builds the media-capability request that joins a link.
-func BuildCallLinkJoin(token string, media CallLinkMedia, requestID string) (waBinary.Node, error) {
+// pushName is our profile name; other participants who don't have us saved
+// only learn it from this, so without it they show "Unknown user".
+func BuildCallLinkJoin(token string, media CallLinkMedia, pushName, requestID string) (waBinary.Node, error) {
 	// Source of truth: https://github.com/tulir/whatsmeow/blob/3775fbadf88fdf44ada62ae5c5db5d7cc6f26259/voip/call_link.go#L60-L94
 	if strings.TrimSpace(token) == "" {
 		return waBinary.Node{}, fmt.Errorf("signaling: call-link token is required")
@@ -110,9 +112,13 @@ func BuildCallLinkJoin(token string, media CallLinkMedia, requestID string) (waB
 		waBinary.Node{Tag: "net", Attrs: waBinary.Attrs{"medium": "2"}},
 		waBinary.Node{Tag: "capability", Attrs: waBinary.Attrs{"ver": "1"}, Content: append([]byte(nil), CapabilityOffer...)},
 	)
-	return buildCallServiceRequest(requestID, waBinary.Node{
-		Tag: "link_join", Attrs: waBinary.Attrs{"token": token, "media": string(media)}, Content: children,
-	})
+	// WA Web's VoIP engine (serialize_link_join in call_link.cc) writes
+	// token, media, an optional retry, then push_name.
+	attrs := waBinary.Attrs{"token": token, "media": string(media)}
+	if pushName != "" {
+		attrs["push_name"] = pushName
+	}
+	return buildCallServiceRequest(requestID, waBinary.Node{Tag: "link_join", Attrs: attrs, Content: children})
 }
 
 func validateCallLinkMedia(media CallLinkMedia) error {
