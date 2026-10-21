@@ -7,6 +7,15 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### engine — tell call-link guests our name — `implemented`
+
+- Every call stanza of a call joined through a link now carries our push name
+  as `notify` on its action child. The server includes push names in
+  `group_info` only for guests, and a guest on WhatsApp Web has no contacts,
+  so it showed signed-in members as "Unknown user" (also "Unknown user raised
+  their hand"). WA Web's call parser (WAWebHandleVoipCall) reads that `notify`
+  as the sender's push name and stores it (WAWebVoipLidUtils).
+
 ### engine/rtp — receive dual-stream (version 3) screen shares — `implemented`
 
 - A version-3 sharer sends its screen as an auxiliary video stream next to the
