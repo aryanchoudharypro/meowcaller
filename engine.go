@@ -280,8 +280,16 @@ func (e *engine) transmitCallNode(ctx context.Context, node waBinary.Node) error
 // member's name from this attribute alone (WAWebHandleVoipCall reads the first
 // child's notify as caller_push_name and WAWebVoipLidUtils stores it as the
 // sender's push name). Without it guests see "Unknown user".
+//
+// Only stanzas to a participant carry it. The server drops anything it
+// handles itself (to "call" or "<call-id>@call") that has the attribute,
+// without an ack: heartbeats stop counting and the call ends a minute in,
+// and waiting-room admits never let anyone in.
 func (e *engine) withLinkCallNotify(node waBinary.Node) waBinary.Node {
 	if node.Tag != "call" || e.c == nil || e.c.wa == nil || e.c.wa.Store == nil || e.c.wa.Store.PushName == "" {
+		return node
+	}
+	if !stanzaToParticipant(node) {
 		return node
 	}
 	children, ok := node.Content.([]waBinary.Node)
@@ -305,6 +313,18 @@ func (e *engine) withLinkCallNotify(node waBinary.Node) waBinary.Node {
 	child.Attrs = attrs
 	node.Content = []waBinary.Node{child}
 	return node
+}
+
+// stanzaToParticipant reports whether a call stanza is addressed to a user's
+// device rather than to the server's call service.
+func stanzaToParticipant(node waBinary.Node) bool {
+	switch to := node.Attrs["to"].(type) {
+	case types.JID:
+		return to.Server == types.HiddenUserServer || to.Server == types.DefaultUserServer
+	case string:
+		return strings.HasSuffix(to, "@"+types.HiddenUserServer) || strings.HasSuffix(to, "@"+types.DefaultUserServer)
+	}
+	return false
 }
 
 func (e *engine) nextCallNodeID() string {

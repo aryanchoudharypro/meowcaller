@@ -15,6 +15,9 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
   so it showed signed-in members as "Unknown user" (also "Unknown user raised
   their hand"). WA Web's call parser (WAWebHandleVoipCall) reads that `notify`
   as the sender's push name and stores it (WAWebVoipLidUtils).
+- Only stanzas addressed to a participant carry it: the server silently drops
+  `@call` stanzas with the attribute (no ack), which ended calls a minute in
+  (heartbeats ignored) and kept waiting-room admits from letting anyone in.
 
 ### engine/rtp — receive dual-stream (version 3) screen shares — `implemented`
 
