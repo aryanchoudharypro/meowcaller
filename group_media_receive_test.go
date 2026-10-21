@@ -1488,3 +1488,70 @@ func TestParticipantReceiveRegistryDepartureWaitsForInFlightDecode(t *testing.T)
 		t.Fatal("departed participant produced audio after pruning completed")
 	}
 }
+
+func TestParticipantReceiveRegistryAuthenticatesDualStreamScreenShare(t *testing.T) {
+	callKey := iota32()
+	rawKey := bytes.Repeat([]byte{0x5a}, 32)
+	self := mediaTestJID("111111111111111", 14)
+	peer := mediaTestJID("222222222222222", 0)
+	added := mediaTestJID("333333333333333", 43)
+	pending := mediaTestJID("444444444444444", 63)
+	registry, err := newParticipantReceiveRegistry("CID", callKey, self.String(), peer.String(), nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	if err = registry.ApplyGroupUpdate(mediaTestGroupUpdate(self, peer, added, pending, 17, true)); err != nil {
+		t.Fatalf("apply roster: %v", err)
+	}
+	if err = registry.ApplyGroupRawEpoch(17, rawKey); err != nil {
+		t.Fatalf("apply group epoch: %v", err)
+	}
+	addedID := rtp.FormatE2ESrtpParticipantID(added.String())
+	keys, err := srtp.DeriveE2eKeysFromRaw(rawKey, addedID)
+	if err != nil {
+		t.Fatalf("derive keys: %v", err)
+	}
+	protect := func(layer int, seq uint16) ([]byte, uint32) {
+		ssrc, deriveErr := rtp.DeriveWasmScreenShareSsrc("CID", addedID, layer)
+		if deriveErr != nil {
+			t.Fatalf("derive screen SSRC: %v", deriveErr)
+		}
+		header := rtp.RtpHeader{PayloadType: rtp.RtpPayloadTypeH264, SequenceNumber: seq, Timestamp: 9000, Ssrc: ssrc}
+		packet := rtp.EncodeRtpHeader(&header)
+		encrypted, cryptErr := srtp.CryptPayload(&keys, ssrc, seq, 0, []byte{0x65, 0x09})
+		if cryptErr != nil {
+			t.Fatalf("encrypt screen packet: %v", cryptErr)
+		}
+		packet = append(packet, encrypted...)
+		return srtp.AppendWarpMITag(keys.AuthKey[:], packet, 0, srtp.WarpMITagLen), ssrc
+	}
+	for layer := range rtp.ScreenShareStreamCount {
+		packet, ssrc := protect(layer, uint16(layer+1))
+		media, ok := registry.UnprotectVideo(packet)
+		if !ok {
+			t.Fatalf("screen-share layer %d was not authenticated", layer)
+		}
+		if !media.ScreenShare || media.Header.Ssrc != ssrc || media.DeviceJID != added || !media.HasPID {
+			t.Fatalf("layer %d media = screen %t ssrc %#x device %s pid %d", layer, media.ScreenShare, media.Header.Ssrc, media.DeviceJID, media.PID)
+		}
+		if !bytes.Equal(media.Payload, []byte{0x65, 0x09}) {
+			t.Fatalf("layer %d payload = %x", layer, media.Payload)
+		}
+	}
+	camera, _ := protectRawParticipantRTP(t, rawKey, added, rtp.VideoSlotWord, rtp.RtpPayloadTypeH264, []byte{0x65, 0x03})
+	if media, ok := registry.UnprotectVideo(camera); !ok || media.ScreenShare {
+		t.Fatalf("camera video = authenticated %t screen %t, want camera", ok, media.ScreenShare)
+	}
+	stray, _ := protect(0, 7)
+	stray[len(stray)-1] ^= 0xff
+	if _, ok := registry.UnprotectVideo(stray); ok {
+		t.Fatal("tampered screen-share packet authenticated")
+	}
+	if err = registry.ApplyGroupUpdate(mediaTestGroupUpdate(self, peer, added, pending, 18, false)); err != nil {
+		t.Fatalf("apply departure: %v", err)
+	}
+	departed, _ := protect(0, 8)
+	if _, ok := registry.UnprotectVideo(departed); ok {
+		t.Fatal("departed participant screen share remained active")
+	}
+}

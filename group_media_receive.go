@@ -52,7 +52,10 @@ type unprotectedParticipantMedia struct {
 	HasPID        bool
 	Header        rtp.RtpHeader
 	Payload       []byte
-	receiver      *participantAudioReceiver
+	// ScreenShare marks media on a dual-stream screen-share SSRC rather than the
+	// participant's camera.
+	ScreenShare bool
+	receiver    *participantAudioReceiver
 }
 
 type participantAudioReceiver struct {
@@ -69,10 +72,14 @@ type participantAudioReceiver struct {
 	pipe          *MediaPipeline
 	videoPipe     *MediaPipeline
 	appDataPipe   *MediaPipeline
-	srtcp         *mediaSrtcpReceiver
-	decoder       participantAudioDecoder
-	codecProbe    inboundCodecProbe
-	opusDecoder   *standardOpusDecoder
+	// screenSSRCs and screenPipes are the dual-stream (version 3) screen-share video
+	// layers, each with its own SRTP replay state.
+	screenSSRCs [rtp.ScreenShareStreamCount]uint32
+	screenPipes [rtp.ScreenShareStreamCount]*MediaPipeline
+	srtcp       *mediaSrtcpReceiver
+	decoder     participantAudioDecoder
+	codecProbe  inboundCodecProbe
+	opusDecoder *standardOpusDecoder
 }
 
 type installedGroupRawEpoch struct {
@@ -212,11 +219,25 @@ func (r *participantReceiveRegistry) newReceiver(userJID, deviceJID types.JID, p
 	if err != nil {
 		return nil, fmt.Errorf("meowcaller: create participant app-data receive pipeline: %w", err)
 	}
+	var screenSSRCs [rtp.ScreenShareStreamCount]uint32
+	var screenPipes [rtp.ScreenShareStreamCount]*MediaPipeline
+	for layer := range screenSSRCs {
+		// Source of truth: WA Web VoIP wasm 5Cl8WJerEpu "Adding screen share video SSRC 0x%08X for participant %s into crypto list (stream %d)" (func 7109): the screen-share SSRCs share the participant's media crypto
+		screenSSRCs[layer], err = rtp.DeriveWasmScreenShareSsrc(r.callID, participantID, layer, r.log)
+		if err != nil {
+			return nil, fmt.Errorf("meowcaller: derive participant screen-share SSRC: %w", err)
+		}
+		screenPipes[layer], err = NewMediaPipeline(r.callKey, r.selfLID, deviceJID.String(), screenSSRCs[layer], FrameSamples, WithLogger(r.log))
+		if err != nil {
+			return nil, fmt.Errorf("meowcaller: create participant screen-share receive pipeline: %w", err)
+		}
+	}
 	srtcpReceiver, err := newMediaSrtcpReceiver(r.callKey, deviceJID.String())
 	if err != nil {
 		return nil, fmt.Errorf("meowcaller: create participant SRTCP receiver: %w", err)
 	}
 	return &participantAudioReceiver{
+		screenSSRCs: screenSSRCs, screenPipes: screenPipes,
 		userJID: userJID, deviceJID: deviceJID, participantID: participantID,
 		pid: pid, hasPID: hasPID, ssrc: ssrc, streamSSRCs: streamSSRCs,
 		videoSSRC: videoSSRC, appDataSSRC: appDataSSRC,
@@ -499,6 +520,10 @@ func clearParticipantReceiverKeys(receiver *participantAudioReceiver) {
 	receiver.videoPipe.installRecvKeys(srtp.E2eSrtpKeys{})
 	receiver.appDataPipe.installSendKeys(srtp.E2eSrtpKeys{})
 	receiver.appDataPipe.installRecvKeys(srtp.E2eSrtpKeys{})
+	for _, pipe := range receiver.screenPipes {
+		pipe.installSendKeys(srtp.E2eSrtpKeys{})
+		pipe.installRecvKeys(srtp.E2eSrtpKeys{})
+	}
 	receiver.srtcp.installKeys(srtp.E2eSrtpKeys{})
 }
 
@@ -689,6 +714,9 @@ func (r *participantReceiveRegistry) installPreparedGroupRawEpochLocked(prepared
 		receiver.pipe.installRecvKeysPreservingROC(keys)
 		receiver.videoPipe.installRecvKeysPreservingROC(keys)
 		receiver.appDataPipe.installRecvKeysPreservingROC(keys)
+		for _, pipe := range receiver.screenPipes {
+			pipe.installRecvKeysPreservingROC(keys)
+		}
 		receiver.srtcp.installKeys(prepared.receiveRTCPKeys[receiver])
 	}
 	r.log.Info().
@@ -756,8 +784,7 @@ func (r *participantReceiveRegistry) UnprotectVideo(packet []byte) (unprotectedP
 	defer r.mu.RUnlock()
 	receiver := r.byVideoSSRC[header.Ssrc]
 	if receiver == nil {
-		r.log.Debug().Uint32("ssrc", header.Ssrc).Msg("dropping video from inactive participant SSRC")
-		return unprotectedParticipantMedia{}, false
+		return r.unprotectScreenShareLocked(header.Ssrc, packet)
 	}
 	receiver.mu.Lock()
 	defer receiver.mu.Unlock()
@@ -766,6 +793,30 @@ func (r *participantReceiveRegistry) UnprotectVideo(packet []byte) (unprotectedP
 		return unprotectedParticipantMedia{}, false
 	}
 	return receiver.unprotectedMedia(authenticatedHeader, payload), true
+}
+
+// unprotectScreenShareLocked authenticates a packet on a participant's dual-stream
+// screen-share SSRC. The caller holds r.mu.
+func (r *participantReceiveRegistry) unprotectScreenShareLocked(ssrc uint32, packet []byte) (unprotectedParticipantMedia, bool) {
+	// Source of truth: WA Web VoIP wasm 5Cl8WJerEpu check_participant_ssrc_set_for_ssrc_match (func 7223, "found device jid %s from screen share video ssrc %x"): a screen-share SSRC belongs to the participant device whose SSRC set holds it
+	for _, receiver := range r.byDeviceID {
+		for layer, screenSSRC := range receiver.screenSSRCs {
+			if screenSSRC != ssrc {
+				continue
+			}
+			receiver.mu.Lock()
+			defer receiver.mu.Unlock()
+			authenticatedHeader, payload, ok := receiver.screenPipes[layer].UnprotectAudio(packet)
+			if !ok {
+				return unprotectedParticipantMedia{}, false
+			}
+			media := receiver.unprotectedMedia(authenticatedHeader, payload)
+			media.ScreenShare = true
+			return media, true
+		}
+	}
+	r.log.Debug().Uint32("ssrc", ssrc).Msg("dropping video from inactive participant SSRC")
+	return unprotectedParticipantMedia{}, false
 }
 
 func (r *participantReceiveRegistry) UnprotectAppData(packet []byte) (unprotectedParticipantMedia, bool) {

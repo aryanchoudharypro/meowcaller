@@ -7,6 +7,24 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### engine/rtp — receive dual-stream (version 3) screen shares — `implemented`
+
+- A version-3 sharer sends its screen as an auxiliary video stream next to the
+  camera. Its SSRC is the video SSRC derivation with the identifier
+  `<device>[_<layer>]_ss` (WA Web VoIP wasm `call_generate_ssrc_for_identifier`,
+  func 12261; layers 0 and 1 are `ScreenShareVideoStream0/1`, StreamLayer 8/9).
+  `rtp.DeriveWasmScreenShareSsrc` derives it; each participant receiver now
+  authenticates both layers with their own SRTP replay state and the media loop
+  assembles them per stream.
+- New `Call.OnParticipantScreenFrame` delivers those access units
+  (`ParticipantVideoFrame.ScreenShare` is set). They never reach `ReceiveVideo`
+  or `OnParticipantVideoFrame`, which stay camera-only. `ScreenShareState`
+  gains `DualStream()` (`Version >= 3`). Version 2 is unchanged.
+- Validated by `TestParticipantReceiveRegistryAuthenticatesDualStreamScreenShare`
+  and `TestScreenShareSsrcUsesTheScreenShareIdentifier`. The derived SSRC and the
+  payload type (assumed 97, as the camera) are not confirmed against a capture.
+  Sending a dual-stream share is not implemented.
+
 ### engine — in-call heartbeat for group calls — `implemented`
 
 - Group calls were ended by the server with `group_call_ended` about a minute

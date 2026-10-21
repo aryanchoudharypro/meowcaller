@@ -2,6 +2,7 @@ package rtp
 
 import (
 	"encoding/binary"
+	"strconv"
 	"strings"
 
 	"github.com/purpshell/meowcaller/util"
@@ -41,6 +42,24 @@ func DeriveWasmParticipantSsrc(callID, lid string, slotWord uint32, log ...zerol
 	ssrc := binary.LittleEndian.Uint32(okm)
 	lg.Trace().Str("call_id", callID).Str("lid", lid).Uint32("slot_word", slotWord).Uint32("ssrc", ssrc).Msg("derived participant ssrc")
 	return ssrc, nil
+}
+
+// ScreenShareStreamCount is the number of screen-share video layers a dual-stream
+// (version 3) sharer can send; they are the StreamLayer values ScreenShareVideoStream0
+// and ScreenShareVideoStream1.
+const ScreenShareStreamCount = 2
+
+// DeriveWasmScreenShareSsrc derives the media SSRC of one screen-share video layer of
+// a participant. It is the video SSRC derivation with the screen-share identifier:
+// info is lid, then "_<streamID>" for layers above 0, then "_ss"; the slot word is the
+// video media slot.
+func DeriveWasmScreenShareSsrc(callID, lid string, streamID int, log ...zerolog.Logger) (uint32, error) {
+	// Source of truth: WA Web VoIP wasm 5Cl8WJerEpu call_generate_ssrc_for_identifier (func 12261: "%.*s_%d" for stream ids above 0, "_ss" appended for screen_share, secure-ssrc callback index 2/3/5 for non-audio) and call_generate_device_ssrc (func 12260: "screen share video" set built by func 12262 for stream ids 0 and 1)
+	identifier := lid
+	if streamID > 0 {
+		identifier += "_" + strconv.Itoa(streamID)
+	}
+	return DeriveWasmParticipantSsrc(callID, identifier+"_ss", VideoSlotWord, pickLog(log))
 }
 
 // DeriveWasmRelayStreamSsrcs derives all 9 relay-stream SSRCs in slot order.

@@ -43,6 +43,7 @@ type Call struct {
 	onVideoState              func(VideoState)
 	onVideoKeyframeRequest    func()
 	onParticipantVideoFrame   func(ParticipantVideoFrame)
+	onParticipantScreenFrame  func(ParticipantVideoFrame)
 	onReaction                func(CallReaction)
 	groupState                *GroupCallState
 	onGroupState              func(GroupCallState)
@@ -132,6 +133,10 @@ type ScreenShareState struct {
 	HasScreenShareID bool
 	Synthetic        bool
 }
+
+// DualStream reports a version-3 share: the screen arrives on its own auxiliary
+// video stream (see Call.OnParticipantScreenFrame) while the camera keeps going.
+func (s ScreenShareState) DualStream() bool { return s.Version >= 3 }
 
 // ID returns the call-id (32 uppercase hex chars).
 func (c *Call) ID() string { return c.id }
@@ -697,6 +702,30 @@ func (c *Call) dispatchParticipantVideoFrame(frame ParticipantVideoFrame) bool {
 	// Source of truth: https://github.com/purpshell/meowcaller/blob/36d54857c74e45ccb08f6444a32d2afa13f20be9/datasheets/group-video-reactions.md#L32-L54
 	c.mu.Lock()
 	fn := c.onParticipantVideoFrame
+	c.mu.Unlock()
+	if fn == nil {
+		return false
+	}
+	fn(cloneParticipantVideoFrame(frame))
+	return true
+}
+
+// OnParticipantScreenFrame registers a callback for the H.264 access units of a
+// participant's dual-stream (version 3) screen share, which WhatsApp sends as an
+// auxiliary video stream next to the camera. Frames have ScreenShare set and carry
+// the sharer's identity; they never reach ReceiveVideo or OnParticipantVideoFrame,
+// which stay camera-only. A version-2 share replaces the camera on the camera
+// stream and is not reported here. ScreenShareState.Version tells which a peer uses.
+func (c *Call) OnParticipantScreenFrame(fn func(ParticipantVideoFrame)) {
+	// Source of truth: WA Web VoIP wasm 5Cl8WJerEpu start_peer_screen_share_and_notify (func 12546) and call_create_auxiliary_screen_share_stream (func 12723): a V3 sharer's screen is decoded from an auxiliary stream, separate from the camera port
+	c.mu.Lock()
+	c.onParticipantScreenFrame = fn
+	c.mu.Unlock()
+}
+
+func (c *Call) dispatchParticipantScreenFrame(frame ParticipantVideoFrame) bool {
+	c.mu.Lock()
+	fn := c.onParticipantScreenFrame
 	c.mu.Unlock()
 	if fn == nil {
 		return false

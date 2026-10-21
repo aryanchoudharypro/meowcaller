@@ -86,3 +86,26 @@ func TestCapturedAppDataSsrcUsesSlotSix(t *testing.T) {
 		t.Fatalf("app-data SSRC = %d, want captured 2135790987", got)
 	}
 }
+
+// TestScreenShareSsrcUsesTheScreenShareIdentifier pins the identifier the screen-share
+// layers are derived from; there is no captured value for it.
+func TestScreenShareSsrcUsesTheScreenShareIdentifier(t *testing.T) {
+	const callID, lid = "CID", "111111111111111:14@lid"
+	layer0, err := DeriveWasmScreenShareSsrc(callID, lid, 0)
+	if err != nil {
+		t.Fatalf("layer 0: %v", err)
+	}
+	layer1, err := DeriveWasmScreenShareSsrc(callID, lid, 1)
+	if err != nil {
+		t.Fatalf("layer 1: %v", err)
+	}
+	want0, _ := DeriveWasmParticipantSsrc(callID, lid+"_ss", VideoSlotWord)
+	want1, _ := DeriveWasmParticipantSsrc(callID, lid+"_1_ss", VideoSlotWord)
+	if layer0 != want0 || layer1 != want1 {
+		t.Fatalf("layers = %#x %#x, want %#x %#x", layer0, layer1, want0, want1)
+	}
+	camera, _ := DeriveWasmParticipantSsrc(callID, lid, VideoSlotWord)
+	if layer0 == layer1 || layer0 == camera || layer1 == camera {
+		t.Fatalf("screen-share SSRCs collide with each other or the camera: %#x %#x %#x", layer0, layer1, camera)
+	}
+}

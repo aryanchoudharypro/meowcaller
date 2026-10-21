@@ -38,6 +38,13 @@ type videoReceiveState struct {
 	orientation int
 }
 
+// screenStreamKey identifies one screen-share layer of one participant; the layers
+// are separate RTP streams, so each needs its own access-unit assembler.
+type screenStreamKey struct {
+	receiver *participantAudioReceiver
+	ssrc     uint32
+}
+
 // maybeStartMedia launches the media loop for callID once both the callKey and the relay
 // endpoint are known. It is idempotent — the loop starts exactly once per call.
 func (e *engine) maybeStartMedia(callID string) {
@@ -847,11 +854,12 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 		e.mu.Unlock()
 	}()
 	videoReceiveStates := make(map[*participantAudioReceiver]*videoReceiveState)
+	screenReceiveStates := make(map[screenStreamKey]*videoReceiveState)
 	appDataReceivers := make(map[*participantAudioReceiver]*appDataReceiver)
 	lastVideoPLI := make(map[uint32]time.Time)
 	var rosterGeneration uint64
 	hasRosterGeneration := false
-	var videoWirePacket, videoWireFrame uint64
+	var videoWirePacket, videoWireFrame, screenFrameIn uint64
 
 	// Video send: a second WARP pipeline on our video SSRC, registered on the call so
 	// Call.SendVideoFrame can push encoded H.264 to the relay. Cleared when the loop exits.
@@ -1041,6 +1049,14 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 				delete(lastVideoPLI, receiver.videoSSRC)
 				delete(videoReceiveStates, receiver)
 			}
+			for key, state := range screenReceiveStates {
+				if _, active := activeReceivers[key.receiver]; active {
+					continue
+				}
+				state.assembler = rtp.H264AccessUnitAssembler{}
+				delete(lastVideoPLI, key.ssrc)
+				delete(screenReceiveStates, key)
+			}
 			for receiver := range appDataReceivers {
 				if _, active := activeReceivers[receiver]; !active {
 					delete(appDataReceivers, receiver)
@@ -1211,17 +1227,29 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 				continue
 			}
 			vh = media.Header
-			videoState := videoReceiveStates[media.receiver]
-			if videoState == nil {
-				videoState = &videoReceiveState{orientation: -1}
-				videoReceiveStates[media.receiver] = videoState
+			var videoState *videoReceiveState
+			if media.ScreenShare {
+				key := screenStreamKey{receiver: media.receiver, ssrc: vh.Ssrc}
+				videoState = screenReceiveStates[key]
+				if videoState == nil {
+					videoState = &videoReceiveState{orientation: -1}
+					screenReceiveStates[key] = videoState
+				}
+			} else {
+				videoState = videoReceiveStates[media.receiver]
+				if videoState == nil {
+					videoState = &videoReceiveState{orientation: -1}
+					videoReceiveStates[media.receiver] = videoState
+				}
+				videoReception.Observe(vh.Ssrc, vh.SequenceNumber, vh.Timestamp, uint64(time.Now().UnixMilli()), 90000)
 			}
-			videoReception.Observe(vh.Ssrc, vh.SequenceNumber, vh.Timestamp, uint64(time.Now().UnixMilli()), 90000)
 			if vh.VideoExtension != nil {
 				orientation := vh.VideoExtension.DisplayOrientation()
 				if orientation != videoState.orientation {
 					videoState.orientation = orientation
-					if sink, ok := callVideoSink(call).(VideoOrientationSink); ok {
+					// The screen's orientation travels on its frames only; the call's
+					// video sink renders the camera.
+					if sink, ok := callVideoSink(call).(VideoOrientationSink); ok && !media.ScreenShare {
 						sink.SetOrientation(orientation)
 					}
 					log.Debug().
@@ -1244,7 +1272,7 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 					"marker": vh.Marker, "header_hex": hex.EncodeToString(pkt[:headerLen]),
 					"extension_hex": hex.EncodeToString(extension),
 					"payload_bytes": len(media.Payload), "protected_bytes": len(pkt),
-					"participant_id": media.ParticipantID,
+					"participant_id": media.ParticipantID, "screen_share": media.ScreenShare,
 				})
 			}
 			videoWirePacket++
@@ -1271,7 +1299,27 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 					})
 				}
 				videoWireFrame++
-				e.c.diag.Emit("video", map[string]any{"event": "frame", "ssrc": vh.Ssrc, "bytes": len(frame)})
+				e.c.diag.Emit("video", map[string]any{"event": "frame", "ssrc": vh.Ssrc, "bytes": len(frame), "screen_share": media.ScreenShare})
+				if media.ScreenShare {
+					// A dual-stream screen share is not the camera: it goes only to the
+					// screen-share callback, never to the camera video sink.
+					delivered := call != nil && call.dispatchParticipantScreenFrame(ParticipantVideoFrame{
+						ParticipantID: media.ParticipantID,
+						Sender:        media.UserJID,
+						Device:        media.DeviceJID,
+						PID:           media.PID,
+						HasPID:        media.HasPID,
+						SSRC:          vh.Ssrc,
+						Orientation:   videoState.orientation,
+						AccessUnit:    frame,
+						ScreenShare:   true,
+					})
+					if screenFrameIn++; screenFrameIn == 1 {
+						log.Info().Uint32("ssrc", vh.Ssrc).Bool("delivered", delivered).Msg("first dual-stream screen-share frame received (NOT VALIDATED)")
+						e.c.diag.Emit("meta", map[string]any{"event": "first_screen_share_frame_in", "call_id": callID, "ssrc": vh.Ssrc})
+					}
+					continue
+				}
 				deliveredParticipantFrame := false
 				if call != nil {
 					deliveredParticipantFrame = call.dispatchParticipantVideoFrame(ParticipantVideoFrame{

@@ -66,6 +66,9 @@ type ParticipantVideoFrame struct {
 	SSRC          uint32
 	Orientation   int
 	AccessUnit    []byte
+	// ScreenShare is set on frames of a dual-stream screen share, which arrive only
+	// through Call.OnParticipantScreenFrame.
+	ScreenShare bool
 }
 
 func cloneParticipantVideoFrame(frame ParticipantVideoFrame) ParticipantVideoFrame {
