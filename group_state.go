@@ -39,7 +39,7 @@ func mergeGroupUpdate(current *groupCallUpdate, update groupCallUpdate) (groupCa
 	}
 	advancesRelay := update.Relay != nil &&
 		(current.Relay == nil || update.Relay.TransactionID > current.Relay.TransactionID)
-	if update.TransactionID <= current.TransactionID {
+	if update.TransactionID < current.TransactionID {
 		if !advancesRelay {
 			return groupCallUpdate{}, groupUpdateStale
 		}
@@ -100,6 +100,14 @@ func mergeGroupUpdate(current *groupCallUpdate, update groupCallUpdate) (groupCa
 		// Roster progress cannot revoke or roll back a held allocation.
 		merged.Relay = cloneGroupCallUpdate(*current).Relay
 	}
+	if update.TransactionID == current.TransactionID && !update.RekeyRequested {
+		if !rosterAdvanced(current, &merged) {
+			if !advancesRelay {
+				return groupCallUpdate{}, groupUpdateStale
+			}
+			return merged, groupUpdateRelayOnly
+		}
+	}
 	return merged, groupUpdateApplied
 }
 
@@ -133,4 +141,38 @@ func sortedUniquePIDs(pids []uint32) []uint32 {
 	out := slices.Clone(pids)
 	slices.Sort(out)
 	return slices.Compact(out)
+}
+
+func rosterAdvanced(current, merged *groupCallUpdate) bool {
+	if len(current.Participants) != len(merged.Participants) {
+		return true
+	}
+	currentPIDs := make(map[types.JID]uint32)
+	currentStates := make(map[types.JID]string)
+	for _, p := range current.Participants {
+		currentStates[p.JID] = p.State
+		for _, d := range p.Devices {
+			if d.HasPID {
+				currentPIDs[d.JID] = d.PID
+			}
+		}
+	}
+	for _, p := range merged.Participants {
+		if currentStates[p.JID] != p.State {
+			return true
+		}
+		for _, d := range p.Devices {
+			if d.HasPID {
+				oldPID, hadPID := currentPIDs[d.JID]
+				if !hadPID || oldPID != d.PID {
+					return true
+				}
+			} else {
+				if _, hadPID := currentPIDs[d.JID]; hadPID {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }

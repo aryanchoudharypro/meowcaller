@@ -195,3 +195,54 @@ func TestApplyGroupUpdateKeepsRelayOnlyAdoptionOffTheRoster(t *testing.T) {
 		t.Fatalf("an older roster with no relay = %v, want stale", outcome)
 	}
 }
+
+func TestMergeGroupUpdateAppliesRosterWithPIDsAtSameTransactionID(t *testing.T) {
+	// When rejoining a call link, the link_join ACK installs a preliminary
+	// roster at transaction T without PIDs or relay. The server's immediate
+	// group_update follows with the same transaction T carrying PIDs, relay,
+	// and rekey="1". It must be applied as a full roster update, not dropped as relay-only.
+	current := groupCallUpdate{
+		CallID: "CALL", TransactionID: 22, Media: "audio",
+		Participants: []groupCallParticipant{
+			groupStateTestParticipant("100", "connected", groupStateTestDevice("100", 0, 0, false)),
+			groupStateTestParticipant("200", "connected", groupStateTestDevice("200", 0, 0, false)),
+		},
+	}
+	update := groupCallUpdate{
+		CallID: "CALL", TransactionID: 22, Media: "audio", RekeyRequested: true,
+		Participants: []groupCallParticipant{
+			groupStateTestParticipant("100", "connected", groupStateTestDevice("100", 0, 1, true)),
+			groupStateTestParticipant("200", "connected", groupStateTestDevice("200", 0, 2, true)),
+		},
+		Relay: groupStateTestRelay(13, "del3c02"),
+	}
+	merged, outcome := mergeGroupUpdate(&current, update)
+	if outcome != groupUpdateApplied {
+		t.Fatalf("outcome = %v, want applied", outcome)
+	}
+	if !merged.RekeyRequested {
+		t.Fatal("rekey requested was dropped")
+	}
+	if merged.Relay == nil || merged.Relay.Endpoints[0].RelayName != "del3c02" {
+		t.Fatalf("relay not adopted: %+v", merged.Relay)
+	}
+	if !merged.Participants[0].Devices[0].HasPID || merged.Participants[0].Devices[0].PID != 1 {
+		t.Fatalf("device 0 pid = (%d, %v), want (1, true)", merged.Participants[0].Devices[0].PID, merged.Participants[0].Devices[0].HasPID)
+	}
+	if !merged.Participants[1].Devices[0].HasPID || merged.Participants[1].Devices[0].PID != 2 {
+		t.Fatalf("device 1 pid = (%d, %v), want (2, true)", merged.Participants[1].Devices[0].PID, merged.Participants[1].Devices[0].HasPID)
+	}
+
+	// An identical update arriving again with the same transaction and no rekey is stale
+	update.RekeyRequested = false
+	if _, outcome = mergeGroupUpdate(&merged, update); outcome != groupUpdateStale {
+		t.Fatalf("identical update outcome = %v, want stale", outcome)
+	}
+
+	// An identical update with an advanced relay is relay-only
+	update.Relay = groupStateTestRelay(14, "bom5c02")
+	mergedRelay, outcome := mergeGroupUpdate(&merged, update)
+	if outcome != groupUpdateRelayOnly || mergedRelay.Relay.Endpoints[0].RelayName != "bom5c02" {
+		t.Fatalf("advanced relay outcome = %v, want relay-only", outcome)
+	}
+}
