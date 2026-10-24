@@ -29,6 +29,7 @@ type Call struct {
 	peerAccepted   bool
 	acceptNotified bool
 	onMuteState    func(muted bool)
+	onMuteRequest  func(by types.JID)
 	muted          bool
 	muteMu         sync.Mutex
 	stats          mediaStatsCounters

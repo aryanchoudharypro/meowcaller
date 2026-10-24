@@ -1514,6 +1514,10 @@ func (e *engine) onCallRaw(callNode *waBinary.Node) bool {
 		if callID == "" {
 			return false
 		}
+		if mv.OptionalString("request-state") != "" {
+			e.onMuteRequest(callID, callNode.AttrGetter().OptionalJIDOrEmpty("from"), mv.OptionalString("request-state"))
+			return false
+		}
 		muteState := mv.String("mute-state")
 		muted := muteState == "1"
 		e.mu.Lock()

@@ -7,6 +7,23 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### engine/signaling — mute or remove someone in a group call — `implemented`
+
+- `Call.RequestPeerMute` sends WA's mute request, a `<mute_v2>` carrying
+  `request-state="1"` instead of `mute-state`, to that participant (WA's
+  wa_call_request_peer_mute_in_group_call; deserialize_mute_v2 takes exactly
+  one of the two attributes).
+- `Call.RemoveParticipant` sends `<remove_user jid>` to `<call-id>@call`
+  (serialize_remove_user). Like WA Web, only the creator of a call-link call
+  may remove people; `Call.CanRemoveParticipants` says whether we can.
+- A mute request to us in a group call now mutes us, announces it with our
+  own `<mute_v2 mute-state="1">` and fires `Call.OnMuteRequested`. Before, it
+  was read as the peer's own mute state. Requests in 1:1 calls and from our
+  own devices are ignored, as in WA.
+- Unit tests cover the stanzas and obeying a request. Not yet tried on a real
+  call: where WA addresses the request (the participant's user JID) is read
+  from the wasm's call path, not a capture.
+
 ### engine — join an ongoing group call — `implemented`
 
 - A group call we missed, declined or left while others stayed is now kept
