@@ -1778,6 +1778,20 @@ func (e *engine) installCallAckHook() error {
 		return nil
 	})
 	handlers.SetMapIndex(reflect.ValueOf("call"), callHandler)
+	// whatsmeow surfaces an enc_rekey_retry receipt only as a bare Receipt
+	// event, without the call id and registration it carries.
+	origReceipt := handlers.MapIndex(reflect.ValueOf("receipt"))
+	receiptHandler := reflect.MakeFunc(field.Type().Elem(), func(args []reflect.Value) []reflect.Value {
+		node := args[1].Interface().(*waBinary.Node)
+		if node.AttrGetter().OptionalString("type") == signaling.EncRekeyRetryReceiptType {
+			go e.onEncRekeyRetry(node)
+		}
+		if origReceipt.IsValid() && !origReceipt.IsNil() {
+			origReceipt.Call(args)
+		}
+		return nil
+	})
+	handlers.SetMapIndex(reflect.ValueOf("receipt"), receiptHandler)
 	return nil
 }
 

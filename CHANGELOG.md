@@ -7,6 +7,24 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### engine/signaling — group call key retry (enc_rekey_retry) — `implemented`
+
+- A group call participant that can't decrypt our `enc_rekey` (a stale Signal
+  session, a reinstalled phone) asks for it again with
+  `<receipt type="enc_rekey_retry">` carrying the call id, a count and its
+  registration id. We ignored it, so that person never got our key and heard
+  nothing from us while everyone else did. Like WA Web's
+  handleMessageRetryRequest, we now drop our session with that device if its
+  registration id changed and resend the call's current epoch to it alone
+  (up to WA's 5 retries).
+- When we can't decrypt someone's `enc_rekey`, we now send that receipt
+  ourselves instead of staying silent without a key.
+- A requested fan-out skips a device it can't encrypt for instead of
+  abandoning the whole rekey (whatsapp-rust does the same), and installs its
+  epoch even with no other connected device.
+- Validated by the `signaling` round-trip tests. The resent `enc` carries the
+  requester's count, an assumption not confirmed on a live call.
+
 ### engine — reconnect a dropped call — `implemented`
 
 - A call whose relay went quiet used to stop sending and hang. Like WA Web's

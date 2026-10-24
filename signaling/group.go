@@ -536,6 +536,9 @@ type GroupEncRekeyParams struct {
 	DeviceKey     OfferDeviceKey
 	// DeviceIdentity is our ADV account identity, required with a pkmsg key.
 	DeviceIdentity []byte
+	// RetryCount is the enc count: 0 on a fan-out, the requester's count when
+	// answering an enc_rekey_retry.
+	RetryCount int
 }
 
 // BuildGroupEncRekey builds one keygen-v2 group epoch stanza.
@@ -555,9 +558,10 @@ func BuildGroupEncRekey(params GroupEncRekeyParams) (waBinary.Node, error) {
 	if params.DeviceKey.EncType == "pkmsg" && len(params.DeviceIdentity) == 0 {
 		return waBinary.Node{}, fmt.Errorf("signaling: build group rekey: pre-key epoch requires device identity")
 	}
+	// Source of truth: https://github.com/oxidezap/whatspec/blob/46f630441389e703e04ff3fc012192cf80fdd4ba/generated/stanza/index.json#L4345-L4409
 	children := []waBinary.Node{
 		{Tag: "encopt", Attrs: waBinary.Attrs{"keygen": "2"}},
-		{Tag: "enc", Attrs: waBinary.Attrs{"v": "2", "type": params.DeviceKey.EncType, "count": "0"}, Content: bytes.Clone(params.DeviceKey.Ciphertext)},
+		{Tag: "enc", Attrs: waBinary.Attrs{"v": "2", "type": params.DeviceKey.EncType, "count": strconv.Itoa(params.RetryCount)}, Content: bytes.Clone(params.DeviceKey.Ciphertext)},
 	}
 	if len(params.DeviceIdentity) > 0 {
 		children = append(children, waBinary.Node{Tag: "device-identity", Content: bytes.Clone(params.DeviceIdentity)})

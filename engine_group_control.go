@@ -66,6 +66,9 @@ func (e *engine) onUnknownCallEvent(node *waBinary.Node) {
 			Msg("group rekey received")
 		if err = e.ingestGroupEpoch(context.Background(), envelope); err != nil {
 			e.c.log.Warn().Err(err).Str("call_id", envelope.CallID).Msg("group rekey ingest failed")
+			if errors.Is(err, errGroupRekeyDecrypt) {
+				e.requestGroupEpochRetry(node, envelope)
+			}
 			return
 		}
 		e.c.log.Debug().
@@ -335,7 +338,7 @@ func (e *engine) ingestGroupEpoch(ctx context.Context, envelope *signaling.CallC
 		envelope.Timestamp,
 	)
 	if err != nil {
-		return fmt.Errorf("meowcaller: decrypt group rekey: %w", err)
+		return fmt.Errorf("%w: %w", errGroupRekeyDecrypt, err)
 	}
 	defer clear(plaintext)
 	var message waE2E.Message
@@ -414,19 +417,21 @@ func (e *engine) distributeRequestedGroupEpoch(ctx context.Context, update group
 	// Source of truth: https://github.com/purpshell/meowcaller/blob/d9df3eb9d96ea5260ffcd4036b6669499a1c1bc2/datasheets/voip-group-key-epoch-fanout.md#L99-L162
 	self := e.c.wa.Store.GetLID()
 	recipients := groupRekeyRecipients(update, self)
-	if len(recipients) == 0 {
-		return errors.New("meowcaller: group rekey has no remote connected devices")
-	}
 	rawKey := make([]byte, 32)
 	if _, err := rand.Read(rawKey); err != nil {
 		return err
 	}
-	nodes := make([]waBinary.Node, len(recipients))
-	for i, recipient := range recipients {
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/9b9fdb7e5c4211cdc7c837abb6a9ae9c597e35c5/src/voip/facade.rs#L1735-L1802
+	// A device we can't encrypt for is skipped, not the whole fan-out: it can
+	// still ask for the epoch with an enc_rekey_retry.
+	nodes := make([]waBinary.Node, 0, len(recipients))
+	sentTo := make([]types.JID, 0, len(recipients))
+	for _, recipient := range recipients {
 		ciphertext, encType, needIdentity, err := encryptCallKeyForDevice(ctx, e.c.wa, recipient, rawKey)
 		if err != nil {
-			clear(rawKey)
-			return fmt.Errorf("meowcaller: encrypt group epoch for %s: %w", recipient, err)
+			e.c.log.Warn().Err(err).Str("call_id", update.CallID).Stringer("device_jid", recipient).
+				Msg("skipping group epoch for a device we can't encrypt for")
+			continue
 		}
 		// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/05168a7f47bcaa78b6af8994c8c794d943991573/wacore/src/stanza/group_call.rs#L579-L597
 		var deviceIdentity []byte
@@ -448,14 +453,15 @@ func (e *engine) distributeRequestedGroupEpoch(ctx context.Context, update group
 			clear(rawKey)
 			return err
 		}
-		nodes[i] = node
+		nodes = append(nodes, node)
+		sentTo = append(sentTo, recipient)
 	}
 	var fanoutErrors []error
 	for i, node := range nodes {
 		if err := e.transmitCallNode(ctx, node); err != nil {
 			fanoutErrors = append(
 				fanoutErrors,
-				fmt.Errorf("meowcaller: send group epoch to %s: %w", recipients[i], err),
+				fmt.Errorf("meowcaller: send group epoch to %s: %w", sentTo[i], err),
 			)
 		}
 	}
