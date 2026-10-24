@@ -7,6 +7,20 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### engine — caller-side relaylatency and transport — `implemented`
+
+- As the caller we sent neither `<relaylatency>` nor `<transport>`, and on some
+  relay hosts the callee's RTP then never reached us (whatsapp-rust #1794,
+  issue #1098). The offer ack's relay is now announced in a `<relaylatency>` to
+  the callee devices the ack lists (latency from the relay's `c2r_rtt`, else
+  40 ms), and the callee's `<accept>` is answered once with a `<transport>`
+  (`p2p-cand-round=1`, `transport-message-type=1`) to the answering device.
+  Both carry an `id` on the `<call>` wrapper, without which the server ignores
+  them.
+- Validated by `TestOfferAckSendsCallerRelayLatency` and
+  `TestOutgoingAcceptSendsCallerTransportOnce`. Not yet checked on a live call
+  from meowcaller.
+
 ### engine/signaling — group-bound call to a two-person group — `implemented`
 
 - WhatsApp's own clients call a two-person group as a group call bound to its
