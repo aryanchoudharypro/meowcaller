@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
@@ -37,6 +38,9 @@ type engine struct {
 	sendCallNode    func(context.Context, waBinary.Node) error
 	requestCallNode func(context.Context, waBinary.Node, string) (*waBinary.Node, error)
 	rawCallHookErr  error
+	// dualStream turns on dual-stream (version 3) screen sharing for calls whose
+	// media starts after it is set: see Client.SetDualStreamScreenShare.
+	dualStream atomic.Bool
 }
 
 // engineCall is the engine's per-call state: the public Call handle plus the inputs
@@ -83,9 +87,14 @@ type engineCall struct {
 	// on and holds the device against the next attempt.
 	peerVideoUpgradeAt time.Time
 	videoTx            *videoSender // video send pipeline, live while media runs
-	appDataTx          *appDataSender
-	rekeyPeer          func(string) error
-	group              bool
+	// screenTx is the dual-stream screen layer's send pipeline, live while media
+	// runs on a call that started with dual stream on. screenVersion is the
+	// <screen_share> version of our share in progress, 0 when not sharing.
+	screenTx      *videoSender
+	screenVersion int
+	appDataTx     *appDataSender
+	rekeyPeer     func(string) error
+	group         bool
 	// link marks a call joined through a call link. Its key epoch can arrive
 	// after the relay, so media connects first and stays gated until it does.
 	link                 bool
@@ -281,6 +290,22 @@ func (e *engine) nextCallNodeID() string {
 	var id [8]byte
 	_, _ = rand.Read(id[:])
 	return strings.ToUpper(hex.EncodeToString(id[:]))
+}
+
+// sendScreenFrame packetizes one encoded H.264 access unit onto our dual-stream
+// screen layer, if a dual-stream share is in progress.
+func (e *engine) sendScreenFrame(callID string, au []byte, duration time.Duration) error {
+	e.mu.Lock()
+	var vs *videoSender
+	if m := e.calls[callID]; m != nil && m.screenVersion >= 3 {
+		vs = m.screenTx
+	}
+	e.mu.Unlock()
+	if vs == nil {
+		return ErrNoDualStreamScreenShare
+	}
+	vs.send(au, duration)
+	return nil
 }
 
 // sendVideoFrame packetizes one encoded H.264 access unit and sends it to the relay, if a

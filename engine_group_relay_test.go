@@ -257,3 +257,45 @@ func TestGroupRelayAllocateStateResendsWhenTheSubscriptionChanges(t *testing.T) 
 		t.Fatal("the refreshed subscription is still pending")
 	}
 }
+
+func TestGroupRelayAllocateStateResendsWhenTheScreenShareChanges(t *testing.T) {
+	key := bytes.Repeat([]byte{0x24}, 16)
+	state := newGroupRelayAllocateStateWithHBHFEC([]byte{0x00}, key, [2]uint32{1, 2})
+	relayUpdate := &groupCallRelay{
+		TransactionID: 1, Key: key, Tokens: [][]byte{bytes.Repeat([]byte{0x42}, 174)},
+		Endpoints: []groupCallRelayEndpoint{{RelayName: "del2c02", TokenID: 0}},
+	}
+	endpoint := &relayEndpoint{
+		relayName: "del2c02",
+		addresses: []relayAddress{{ipv4: "163.70.145.133", port: 3478}},
+	}
+	screen := stun.WasmScreenShareStream{SSRCs: [3]uint32{20, 21, 22}}
+	state.SetScreenShare(screen)
+	apply := func() bool {
+		t.Helper()
+		changed, err := state.ApplyWithSubscriptions(
+			endpoint, relayUpdate, [9]uint32{1, 2, 3, 4, 5, 6, 7, 8, 9}, 10, []uint32{3}, [12]byte{7},
+			func([]byte) error { return nil },
+		)
+		if err != nil {
+			t.Fatalf("ApplyWithSubscriptions: %v", err)
+		}
+		return changed
+	}
+	if !apply() || state.Pending(relayUpdate, []uint32{3}) {
+		t.Fatal("the first allocation was not sent, or stays pending")
+	}
+	screen.Sharing = true
+	state.SetScreenShare(screen)
+	if !state.Pending(relayUpdate, []uint32{3}) || !apply() {
+		t.Fatal("starting a share did not re-send the allocation")
+	}
+	if state.Pending(relayUpdate, []uint32{3}) || apply() {
+		t.Fatal("an unchanged share re-sent the allocation")
+	}
+	screen.Sharing = false
+	state.SetScreenShare(screen)
+	if !state.Pending(relayUpdate, []uint32{3}) || !apply() {
+		t.Fatal("stopping a share did not re-send the allocation")
+	}
+}

@@ -42,6 +42,7 @@ type Call struct {
 	videoSink                 VideoSink
 	onVideoState              func(VideoState)
 	onVideoKeyframeRequest    func()
+	onScreenKeyframeRequest   func()
 	onParticipantVideoFrame   func(ParticipantVideoFrame)
 	onParticipantScreenFrame  func(ParticipantVideoFrame)
 	onReaction                func(CallReaction)
@@ -387,9 +388,53 @@ func (c *Call) StartScreenShare(screenShareID *uint32) error {
 	return c.eng.setScreenShare(c.id, true, screenShareID)
 }
 
-// StopScreenShare stops screen sharing without stopping camera video or ending the call.
+// ErrNoDualStreamScreenShare is returned when a dual-stream screen share is
+// started on a call whose media began without Client.SetDualStreamScreenShare,
+// or screen frames are sent with no dual-stream share in progress.
+var ErrNoDualStreamScreenShare = errors.New("meowcaller: call has no dual-stream screen layer")
+
+// StartDualStreamScreenShare announces a version-3 screen share: the screen
+// goes out on its own layer with SendScreenVideo while the camera keeps
+// streaming with SendVideo. The call's media must have started with
+// Client.SetDualStreamScreenShare on, and this client's video must be on.
+// A peer whose own dual-stream switch is off fails to receive it.
+//
+// NOT VALIDATED: live-relay only.
+func (c *Call) StartDualStreamScreenShare(screenShareID *uint32) error {
+	return c.eng.setDualStreamScreenShare(c.id, screenShareID)
+}
+
+// StopScreenShare stops screen sharing without stopping camera video or ending
+// the call, whichever version started it.
 func (c *Call) StopScreenShare() error {
 	return c.eng.setScreenShare(c.id, false, nil)
+}
+
+// SendScreenVideo sends one encoded H.264 access unit (Annex-B) of the shared
+// screen during a dual-stream share, advancing the screen layer's RTP timestamp
+// by duration (zero uses the sender's fallback frame step). The first frame
+// after the share starts, and after OnScreenKeyframeRequest fires, must be an
+// IDR; frames before it are dropped.
+func (c *Call) SendScreenVideo(accessUnit []byte, duration time.Duration) error {
+	return c.eng.sendScreenFrame(c.id, accessUnit, duration)
+}
+
+// OnScreenKeyframeRequest registers a callback for peer PLI/FIR feedback on our
+// dual-stream screen layer. The screen encoder should make its next access unit
+// an IDR.
+func (c *Call) OnScreenKeyframeRequest(fn func()) {
+	c.mu.Lock()
+	c.onScreenKeyframeRequest = fn
+	c.mu.Unlock()
+}
+
+func (c *Call) requestScreenKeyframe() {
+	c.mu.Lock()
+	fn := c.onScreenKeyframeRequest
+	c.mu.Unlock()
+	if fn != nil {
+		fn()
+	}
 }
 
 // OnHandRaise registers a participant hand-state listener.

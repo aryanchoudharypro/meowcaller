@@ -19,6 +19,10 @@ type groupRelayAllocateState struct {
 	// pids is the receiver subscription the current allocation carries.
 	pids        []uint32
 	hbhFECSSRCs [2]uint32
+	// screen is our dual-stream screen layer, zero when dual stream is off.
+	// screenSent is the Sharing value the current allocation carries.
+	screen     stun.WasmScreenShareStream
+	screenSent bool
 }
 
 func newGroupRelayAllocateStateWithHBHFEC(
@@ -31,6 +35,15 @@ func newGroupRelayAllocateStateWithHBHFEC(
 		key:         bytes.Clone(initialKey),
 		hbhFECSSRCs: hbhFECSSRCs,
 	}
+}
+
+// SetScreenShare sets our dual-stream screen layer; a change in Sharing makes
+// the next Pending true, since the relay forwards the layer only to the PIDs
+// the allocation attached to it.
+func (s *groupRelayAllocateState) SetScreenShare(screen stun.WasmScreenShareStream) {
+	s.mu.Lock()
+	s.screen = screen
+	s.mu.Unlock()
 }
 
 func (s *groupRelayAllocateState) Current() []byte {
@@ -59,7 +72,7 @@ func (s *groupRelayAllocateState) Pending(relayUpdate *groupCallRelay, participa
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return !s.hasGroup || relayUpdate.TransactionID > s.transactionID ||
-		!slices.Equal(s.pids, sortedUniquePIDs(participantPIDs))
+		!slices.Equal(s.pids, sortedUniquePIDs(participantPIDs)) || s.screen.Sharing != s.screenSent
 }
 
 func (s *groupRelayAllocateState) SendCurrent(send func([]byte) error) error {
@@ -88,7 +101,8 @@ func (s *groupRelayAllocateState) ApplyWithSubscriptions(
 	participantPIDs = sortedUniquePIDs(participantPIDs)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.hasGroup && relayUpdate.TransactionID <= s.transactionID && slices.Equal(s.pids, participantPIDs) {
+	if s.hasGroup && relayUpdate.TransactionID <= s.transactionID && slices.Equal(s.pids, participantPIDs) &&
+		s.screen.Sharing == s.screenSent {
 		return false, nil
 	}
 	if endpoint == nil || endpoint.relayName == "" || len(endpoint.addresses) == 0 ||
@@ -120,13 +134,14 @@ func (s *groupRelayAllocateState) ApplyWithSubscriptions(
 	if !ok {
 		return false, fmt.Errorf("meowcaller: active relay IPv4 is malformed")
 	}
-	packet := stun.BuildWasmStunAllocateRequestWithGroupSubscriptionsAndHBHFEC(
+	packet := stun.BuildWasmStunAllocateRequestWithGroupSubscriptionsAndScreenShare(
 		transactionID,
 		relayUpdate.Tokens[matched.TokenID],
 		endpointXOR,
 		streamSSRCs,
 		appDataSSRC,
 		s.hbhFECSSRCs,
+		s.screen,
 		participantPIDs,
 		relayUpdate.Key,
 	)
@@ -139,6 +154,7 @@ func (s *groupRelayAllocateState) ApplyWithSubscriptions(
 	// than one already recorded only if the caller passed a stale relay.
 	s.transactionID = max(s.transactionID, relayUpdate.TransactionID)
 	s.pids = participantPIDs
+	s.screenSent = s.screen.Sharing
 	s.hasGroup = true
 	return true, nil
 }

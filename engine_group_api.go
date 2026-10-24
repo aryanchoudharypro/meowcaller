@@ -519,6 +519,22 @@ func (e *engine) setHandRaised(callID string, raised bool) error {
 }
 
 func (e *engine) setScreenShare(callID string, active bool, screenShareID *uint32) error {
+	return e.shareScreen(callID, active, false, screenShareID)
+}
+
+// setDualStreamScreenShare starts a version-3 share on the call's screen layer.
+func (e *engine) setDualStreamScreenShare(callID string, screenShareID *uint32) error {
+	e.mu.Lock()
+	m := e.calls[callID]
+	ready := m != nil && m.screenTx != nil
+	e.mu.Unlock()
+	if !ready {
+		return ErrNoDualStreamScreenShare
+	}
+	return e.shareScreen(callID, true, true, screenShareID)
+}
+
+func (e *engine) shareScreen(callID string, active, dualStream bool, screenShareID *uint32) error {
 	// Source of truth: https://github.com/purpshell/meowcaller/blob/36d54857c74e45ccb08f6444a32d2afa13f20be9/datasheets/group-video-reactions.md#L44-L56
 	if err := e.requireRawCallAdapter(); err != nil {
 		return err
@@ -533,6 +549,11 @@ func (e *engine) setScreenShare(callID string, active bool, screenShareID *uint3
 	group := m != nil && m.group && m.groupUpdate != nil
 	oneToOne := m != nil && !m.group
 	videoPlane := m != nil && m.localVideo && !m.videoGate && (oneToOne || group && m.groupUpdate.Media == "video")
+	// A stop carries the version of the share it ends.
+	version := 2
+	if dualStream || !active && m != nil && m.screenVersion >= 3 {
+		version = 3
+	}
 	e.mu.Unlock()
 	// WA Web's share button has no group check: on a 1:1 call its VoIP
 	// engine sends the same <screen_share> to the peer, as with mute_v2.
@@ -553,12 +574,13 @@ func (e *engine) setScreenShare(callID string, active bool, screenShareID *uint3
 	if active {
 		state = signaling.ScreenShareStarted
 	}
-	node := signaling.BuildScreenShare(
+	node := signaling.BuildScreenShareVersion(
 		callID,
 		to,
 		creator,
 		e.nextCallNodeID(),
 		state,
+		version,
 		screenShareID,
 	)
 	if err = e.transmitCallNode(context.Background(), node); err != nil {
@@ -568,17 +590,37 @@ func (e *engine) setScreenShare(callID string, active bool, screenShareID *uint3
 	var call *Call
 	if current := e.calls[callID]; current != nil {
 		call = current.call
+		current.screenVersion = 0
+		if active {
+			current.screenVersion = version
+		}
+		// The keepalive attaches the receivers to the screen layer's
+		// subscription once screenVersion says a version-3 share is on.
+		if current.screenTx != nil {
+			if active && version >= 3 {
+				current.screenTx.enable(false)
+			} else {
+				current.screenTx.disable()
+			}
+		}
 	}
 	participant := e.c.wa.Store.GetLID().ToNonAD()
 	e.mu.Unlock()
 	if call != nil {
 		call.dispatchScreenShare(ScreenShareState{
-			Participant: participant, Active: active, Version: 2,
+			Participant: participant, Active: active, Version: uint32(version),
 			ScreenShareID: valueOrZero(screenShareID), HasScreenShareID: screenShareID != nil,
 		})
-		// Both directions swap the encoder's source, so the peers need an IDR
-		// before either picture can resume.
-		call.requestVideoKeyframe()
+		if version >= 3 {
+			// The screen layer starts on an IDR; the camera is untouched.
+			if active {
+				call.requestScreenKeyframe()
+			}
+		} else {
+			// Both directions swap the encoder's source, so the peers need an IDR
+			// before either picture can resume.
+			call.requestVideoKeyframe()
+		}
 	}
 	return nil
 }

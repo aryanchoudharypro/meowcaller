@@ -210,6 +210,17 @@ func remoteGroupCallTargets(
 	return targets
 }
 
+// SetDualStreamScreenShare turns dual-stream (version 3) screen sharing on or
+// off for calls whose media starts afterwards. With it on, every relay
+// allocation also carries our screen-share layer, so Call.StartDualStreamScreenShare
+// can send the screen next to the camera. It is off by default: a peer whose
+// own dual-stream switch is off cannot receive a version-3 share.
+//
+// NOT VALIDATED: live-relay only.
+func (c *Client) SetDualStreamScreenShare(on bool) {
+	c.eng.dualStream.Store(on)
+}
+
 // OnIncomingCall registers the listener fired for each inbound call offer. The handler
 // receives a Call that has not been answered yet; call Answer or Reject on it. Only the
 // most recently registered listener is used.

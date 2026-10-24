@@ -28,6 +28,13 @@ func TestRaiseHandAndScreenShareRoundTrip(t *testing.T) {
 		!share.HasScreenShareID || share.ScreenShareID != 1 {
 		t.Fatalf("screen share = %+v", share)
 	}
+
+	dualNode := BuildScreenShareVersion("CID", target, creator, "REQ3", ScreenShareStopped, 3, nil)
+	dualAction := contentNodes(t, dualNode)[0]
+	dual, err := ParseScreenShare(&dualAction)
+	if err != nil || dual.State != ScreenShareStopped || dual.Version != 3 || dual.HasScreenShareID {
+		t.Fatalf("dual-stream screen share = %+v, %v", dual, err)
+	}
 }
 
 func TestCallControlAckPreservesDeviceRouting(t *testing.T) {
