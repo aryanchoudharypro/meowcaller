@@ -76,7 +76,8 @@ func (c *Client) CallWithOptions(ctx context.Context, target string, opts CallOp
 	return c.eng.placeCall(ctx, target, opts)
 }
 
-// GroupCall places an audio group call to at least two remote targets.
+// GroupCall places an audio group call to at least two remote targets (one when
+// GroupCallOptions.GroupJID binds it to a group).
 func (c *Client) GroupCall(ctx context.Context, targets ...string) (*Call, error) {
 	// Source of truth: https://github.com/purpshell/meowcaller/blob/ceaa2156015e8f24e09328fb7a9c89203295efff/datasheets/api-initial-group-call.md#L61-L107
 	return c.GroupCallWithOptions(ctx, targets, GroupCallOptions{})
@@ -122,8 +123,9 @@ func (c *Client) GroupCallByIDWithOptions(
 		return nil, errors.New("meowcaller: group roster lookup returned no group")
 	}
 	targets := remoteGroupCallTargets(info.Participants, c.groupSelfJIDs())
-	if len(targets) < 2 {
-		return nil, errors.New("meowcaller: group call by ID requires at least two remote members")
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/3d0233a28a6bd9cb30b8bf91f3c43bdb8aeffed6/src/voip/facade.rs#L851-L916
+	if len(targets) == 0 {
+		return nil, errors.New("meowcaller: group call by ID requires at least one remote member")
 	}
 	if len(targets) > 31 {
 		return nil, fmt.Errorf(

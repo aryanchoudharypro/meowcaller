@@ -7,6 +7,19 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### engine/signaling — group-bound call to a two-person group — `implemented`
+
+- WhatsApp's own clients call a two-person group as a group call bound to its
+  JID, ringing the one other member (whatsapp-rust #1772, live-tested there
+  against an iPhone). `GroupCallByID` and a group-bound `GroupCallWithOptions`
+  now need one remote member instead of two; an ad-hoc group call still needs
+  two, since a call to one person is a 1:1 call.
+- `signaling.GroupCallMinRemoteParticipants` holds the rule.
+  `BuildInitialGroupOffer` takes self plus one remote participant when
+  `GroupJID` is set.
+- Validated by `TestGroupBoundOfferMayRingOneOtherMember`. Not yet placed from
+  meowcaller against a real phone.
+
 ### engine/rtp — receive dual-stream (version 3) screen shares — `implemented`
 
 - A version-3 sharer sends its screen as an auxiliary video stream next to the
