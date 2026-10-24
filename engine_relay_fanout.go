@@ -79,16 +79,12 @@ func (f *relayFanout) readLoop(ch *relay.RelayMediaChannel) {
 	}
 }
 
-// readerExited closes the fanout once the last relay connection dies, so Recv
-// unblocks with an error instead of waiting on relays that are all gone.
+// readerExited counts a relay connection that died. The fanout stays open with
+// none left: the call's connection watch redials them, or ends the call.
 func (f *relayFanout) readerExited() {
 	f.mu.Lock()
 	f.live--
-	last := f.live == 0
 	f.mu.Unlock()
-	if last {
-		f.Close()
-	}
 }
 
 // Send broadcasts one packet to every relay, succeeding if at least one relay
@@ -227,6 +223,48 @@ func (f *relayFanout) Rebind(name string, replacement *relay.RelayMediaChannel) 
 	for _, ch := range retired {
 		_ = ch.Close()
 	}
+	return nil
+}
+
+// snapshot returns the bound relays' names and allocate payloads, index-aligned.
+func (f *relayFanout) snapshot() ([]string, [][]byte) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.names...), append([][]byte(nil), f.allocs...)
+}
+
+// replace swaps the connection bound to relay name for a freshly dialed one,
+// with its allocate payload (nil keeps none), and retires the old connection.
+func (f *relayFanout) replace(name string, ch *relay.RelayMediaChannel, allocate []byte) error {
+	f.mu.Lock()
+	if f.closed {
+		f.mu.Unlock()
+		return errFanoutClosed
+	}
+	index := -1
+	for i, bound := range f.names {
+		if bound == name {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		f.mu.Unlock()
+		return fmt.Errorf("meowcaller: relay %s is not bound", name)
+	}
+	chans := append([]*relay.RelayMediaChannel(nil), f.chans...)
+	allocs := append([][]byte(nil), f.allocs...)
+	old := chans[index]
+	chans[index] = ch
+	if index < len(allocs) {
+		allocs[index] = allocate
+	}
+	// Fresh slices: Send and ResendAllocates iterate snapshots taken under mu.
+	f.chans, f.allocs = chans, allocs
+	f.live++
+	f.mu.Unlock()
+	go f.readLoop(ch)
+	_ = old.Close()
 	return nil
 }
 

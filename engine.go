@@ -1502,6 +1502,7 @@ func (e *engine) onCallRaw(callNode *waBinary.Node) bool {
 		m := e.calls[callID]
 		e.mu.Unlock()
 		if m != nil && m.call != nil {
+			m.call.peerMuted.Store(muted)
 			if fn := m.call.onMuteStateFn(); fn != nil {
 				fn(muted)
 			}

@@ -373,6 +373,10 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 		return err
 	}
 	defer ch.Close()
+	// Recv blocks while every relay is down; the call ending must unblock it.
+	stopCloseOnEnd := context.AfterFunc(ctx, func() { _ = ch.Close() })
+	defer stopCloseOnEnd()
+	watch := newConnectionWatch(time.Now())
 	allocateState := newGroupRelayAllocateStateWithHBHFEC(
 		ch.allocs[0],
 		rd.relayKeyASCII,
@@ -753,12 +757,13 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 						_, sendErr := ch.PrimarySend(packet)
 						return sendErr
 					}); err != nil {
-						return
+						// The relay is down; keep ticking for when it's redialed.
+						log.Debug().Err(err).Str("call_id", callID).Msg("keepalive allocate failed")
 					}
 				} else if err := ch.ResendAllocates(); err != nil {
 					// Allocates embed per-relay tokens, so each relay must be
 					// refreshed with its own payload rather than a broadcast.
-					return
+					log.Debug().Err(err).Str("call_id", callID).Msg("keepalive allocate failed")
 				}
 			}
 			_, _ = ch.Send(ping[:])
@@ -769,6 +774,13 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 			})
 		}
 	}()
+
+	// Reconnect: redial the relays when they go quiet, end the call if nothing
+	// comes back.
+	redialScreen := stun.WasmScreenShareStream{SSRCs: screenStream.SSRCs}
+	go e.superviseConnection(ctx, callID, call, watch, func(ctx context.Context) int {
+		return e.redialRelays(ctx, callID, ch, rd, inbound, streamSsrcs, redialScreen)
+	}, groupMode.Load)
 
 	// Send loop: frame-paced from connect, NOT gated on the Player. WhatsApp starts media
 	// on relay connection and the relay learns our SSRC from our FIRST RTP — it won't
@@ -824,7 +836,8 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 				"payload_len": len(payload), "packet_len": len(packet),
 			})
 			if _, err := ch.Send(packet); err != nil {
-				return
+				// Every relay is down; frames resume once one is redialed.
+				continue
 			}
 			if call != nil {
 				call.stats.framesSent.Add(1)
@@ -1137,6 +1150,7 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 			hasRosterGeneration = true
 		}
 		relayRx.Add(1)
+		watch.onRelayPacket(time.Now())
 		rawPkt := buf[:n]
 		pkt, groupWrapped, groupValid := relay.UnwrapGroupForwardingPacket(rawPkt)
 		if !groupValid {
@@ -1147,6 +1161,9 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 		}
 		packetKind := relay.ClassifyRelayPacket(pkt)
 		isRTP := packetKind == relay.RelayPacketRtp
+		if isRTP {
+			watch.onPeerMedia(time.Now())
+		}
 		e.c.diag.Emit("relay", map[string]any{
 			"event": "packet_in", "bytes": n, "is_rtp": isRTP,
 			"group_wrapped": groupWrapped, "group_header_bytes": n - len(pkt),
@@ -1209,7 +1226,8 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 					return sendErr
 				})
 				if err != nil {
-					return fmt.Errorf("relay send binding-success: %w", err)
+					log.Debug().Err(err).Msg("relay send binding-success failed")
+					continue
 				}
 				log.Debug().Bool("answered", answered).Int("response_bytes", len(resp)).
 					Msg("relay STUN binding request")

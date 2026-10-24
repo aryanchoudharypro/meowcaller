@@ -60,6 +60,11 @@ type Call struct {
 	handRaises                map[types.JID]bool
 	onScreenShare             func(ScreenShareState)
 	screenShares              map[types.JID]ScreenShareState
+	onReconnecting            func(reconnecting bool)
+	reconnecting              atomic.Bool
+	// peerMuted is the remote party's last mute_v2 state; a muted peer may
+	// stop sending, so its silence isn't a lost connection.
+	peerMuted atomic.Bool
 }
 
 // GroupCallState is a sanitized group-call roster. Transaction zero may contain
@@ -927,6 +932,30 @@ func (c *Call) onAudioHealthFn() func(AudioHealth) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.onAudioHealth
+}
+
+// OnReconnecting registers a callback fired when the call starts reconnecting
+// (true) after its media stopped, and when the media is back (false). A call
+// that can't reconnect ends with reason CallEndConnectionLost.
+func (c *Call) OnReconnecting(fn func(reconnecting bool)) {
+	c.mu.Lock()
+	c.onReconnecting = fn
+	c.mu.Unlock()
+}
+
+// Reconnecting reports whether the call is reconnecting.
+func (c *Call) Reconnecting() bool { return c.reconnecting.Load() }
+
+func (c *Call) setReconnecting(reconnecting bool) {
+	if c.reconnecting.Swap(reconnecting) == reconnecting {
+		return
+	}
+	c.mu.Lock()
+	fn := c.onReconnecting
+	c.mu.Unlock()
+	if fn != nil {
+		fn(reconnecting)
+	}
 }
 
 // OnMuteState registers a callback fired for each inbound WhatsApp mute_v2 state.

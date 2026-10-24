@@ -7,6 +7,24 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### engine — reconnect a dropped call — `implemented`
+
+- A call whose relay went quiet used to stop sending and hang. Like WA Web's
+  VoIP engine, a call now watches its media: no relay packet for 5 s
+  (`tp->relay_unresponsive_timeout`), or in a 1:1 call no RTP from an unmuted
+  peer for 5 s (`mvp->media_rx_timeout_ms`), marks it reconnecting
+  (`Call.OnReconnecting` / `Call.Reconnecting`, shown only once the call is
+  active). A lost relay is redialed on the same path up to three times with
+  WA Web's 1 s / 2 s / 3 s backoff (`MAX_SAME_PATH_RECONNECT_ATTEMPTS`). When
+  that fails, or after 60 s of reconnecting (`tp->relay_data_timeout_ms`), the
+  call is terminated with reason `media_rx_timeout` and ends with
+  `CallEndConnectionLost`.
+- The send loop, keepalive and STUN answers no longer end the media loop on a
+  relay send error, and the fanout no longer closes itself when its last relay
+  dies; the call's context closes it.
+- Validated by the `TestConnectionWatch*` unit tests. The thresholds come from
+  the wasm's parameter defaults; not yet checked on a live dropped call.
+
 ### engine — caller-side relaylatency and transport — `implemented`
 
 - As the caller we sent neither `<relaylatency>` nor `<transport>`, and on some
