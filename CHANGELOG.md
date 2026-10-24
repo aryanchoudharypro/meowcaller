@@ -7,6 +7,18 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### engine — calls missed while offline — `implemented`
+
+- An offer the server replays from the offline queue (whatsmeow's
+  `CallOffer.Offline`, WA Web's `offerReceivedWhileOffline`) no longer rings.
+  The old check read an `e` attribute off the `<offer>` as elapsed seconds,
+  but `e` is a timestamp on the `<call>`, so it never fired.
+- A group call missed that way is joinable if its offer says it is open to
+  latecomers and someone is connected. The first terminate after it only
+  ends its ringing, as for a group call missed live; a later one, or
+  `group_call_ended`/`accepted_elsewhere`, ends it.
+- Unit tests in `engine_group_join_test.go`. Not yet tried live.
+
 ### engine/signaling — mute or remove someone in a group call — `implemented`
 
 - `Call.RequestPeerMute` sends WA's mute request, a `<mute_v2>` carrying

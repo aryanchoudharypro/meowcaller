@@ -8,6 +8,7 @@ import (
 
 	waBinary "go.mau.fi/whatsmeow/binary"
 	"go.mau.fi/whatsmeow/types"
+	"go.mau.fi/whatsmeow/types/events"
 )
 
 func testEngineWithGroupInvite(callID string) (*engine, *Call, *[]waBinary.Node) {
@@ -107,5 +108,43 @@ func TestJoinableCallsAgeOut(t *testing.T) {
 	_ = call.Reject()
 	if got := eng.joinableSnapshot(time.Now().Add(joinableMaxAge + time.Minute)); len(got) != 0 {
 		t.Fatalf("stale joinable call kept: %+v", got)
+	}
+}
+
+func TestOfflineGroupOfferIsJoinableUntilTheCallEnds(t *testing.T) {
+	eng, _ := testEngineWithIncomingCall("OTHER")
+	delete(eng.calls, "OTHER")
+	var rang bool
+	eng.c.OnIncomingCall(func(*Call) { rang = true })
+	ev := &events.CallOffer{BasicCallMeta: types.BasicCallMeta{
+		CallID: "GCALL", CallCreator: creatorJID(), Offline: true, Timestamp: time.Now().Add(-time.Minute),
+	}}
+	eng.noteOfflineJoinable(ev, groupCallUpdate{
+		CallID: "GCALL", CallCreator: creatorJID(), Joinable: true, Media: "video",
+		GroupJID:     types.NewJID("120363000000000001", types.GroupServer),
+		Participants: []groupCallParticipant{{JID: creatorJID(), State: "connected"}},
+	})
+	got := eng.c.JoinableCalls()
+	if rang || len(got) != 1 || !got[0].Video || got[0].Connected != 1 || got[0].GroupJID.IsEmpty() {
+		t.Fatalf("joinable after offline offer = %+v (rang %t)", got, rang)
+	}
+
+	// The terminate that ended its ringing leaves it joinable; a later one ends it.
+	eng.onJoinableTerminate("GCALL", "timeout", false)
+	if len(eng.c.JoinableCalls()) != 1 {
+		t.Fatal("ring-timeout terminate dropped the offline call")
+	}
+	eng.onJoinableTerminate("GCALL", "", false)
+	if len(eng.c.JoinableCalls()) != 0 {
+		t.Fatal("offline call still joinable after it ended")
+	}
+}
+
+func TestOfflineGroupOfferWithNobodyInItIsNotJoinable(t *testing.T) {
+	eng, _ := testEngineWithIncomingCall("OTHER")
+	ev := &events.CallOffer{BasicCallMeta: types.BasicCallMeta{CallID: "GCALL", CallCreator: creatorJID(), Offline: true}}
+	eng.noteOfflineJoinable(ev, groupCallUpdate{CallID: "GCALL", Joinable: true})
+	if len(eng.c.JoinableCalls()) != 0 {
+		t.Fatal("empty offline call became joinable")
 	}
 }

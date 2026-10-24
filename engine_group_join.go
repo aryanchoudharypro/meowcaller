@@ -10,6 +10,7 @@ import (
 	"github.com/purpshell/meowcaller/signaling"
 	waBinary "go.mau.fi/whatsmeow/binary"
 	"go.mau.fi/whatsmeow/types"
+	"go.mau.fi/whatsmeow/types/events"
 )
 
 // joinWatchdog is how long a joined call may wait for the server's roster
@@ -91,6 +92,7 @@ func (e *engine) joinOngoingCall(ctx context.Context, callID string, video bool)
 	m.localVideo = video
 	m.remoteVideo = joinable.Video
 	delete(e.joinable, callID)
+	delete(e.ringingOffline, callID)
 	notify, list := e.onJoinable, e.joinableListLocked(time.Now())
 	e.mu.Unlock()
 	if notify != nil {
@@ -158,10 +160,69 @@ func (e *engine) noteJoinableLocked(callID string, m *engineCall, phase CallPhas
 	return true
 }
 
+// noteOfflineJoinable records a group call we were invited to while offline
+// as joinable, if its roster says it's open to latecomers and someone is in
+// it. A terminate or roster further on in the offline backlog drops it again
+// once the call has ended.
+func (e *engine) noteOfflineJoinable(ev *events.CallOffer, update groupCallUpdate) {
+	// Source of truth: https://github.com/oxidezap/whatspec/blob/46f630441389e703e04ff3fc012192cf80fdd4ba/generated/wasm.lock.json#L1-L4
+	creator := ev.CallCreator
+	if creator.IsEmpty() {
+		creator = update.CallCreator
+	}
+	connected := connectedOthers(update, e.c.wa.Store.GetLID().String())
+	if !update.Joinable || connected == 0 || creator.IsEmpty() {
+		e.c.log.Debug().Str("call_id", ev.CallID).Bool("joinable", update.Joinable).Int("connected", connected).
+			Msg("offline group offer not joinable")
+		return
+	}
+	seen := ev.Timestamp
+	now := time.Now()
+	if seen.IsZero() || seen.After(now) {
+		seen = now
+	}
+	e.mu.Lock()
+	if e.calls[ev.CallID] != nil {
+		e.mu.Unlock()
+		return
+	}
+	if e.joinable == nil {
+		e.joinable = map[string]JoinableCall{}
+	}
+	groupJID := update.GroupJID
+	if groupJID.IsEmpty() {
+		groupJID = ev.GroupJID
+	}
+	if e.ringingOffline == nil {
+		e.ringingOffline = map[string]bool{}
+	}
+	e.ringingOffline[ev.CallID] = true
+	e.joinable[ev.CallID] = JoinableCall{
+		CallID: ev.CallID, Creator: creator, GroupJID: groupJID,
+		Video: update.Media == "video" || ev.Video, Connected: connected, Seen: seen,
+	}
+	notify, list := e.onJoinable, e.joinableListLocked(now)
+	e.mu.Unlock()
+	e.c.log.Info().Str("call_id", ev.CallID).Int("connected", connected).Msg("group call missed while offline is joinable")
+	if notify != nil {
+		notify(list)
+	}
+}
+
 // onJoinableTerminate handles a terminate for a call we're not in: unless it
 // says the call stays joinable, the call is over.
 func (e *engine) onJoinableTerminate(callID, reason string, joinable bool) {
 	// Source of truth: https://github.com/oxidezap/whatspec/blob/46f630441389e703e04ff3fc012192cf80fdd4ba/generated/wasm.lock.json#L1-L4
+	e.mu.Lock()
+	ringing := e.ringingOffline[callID]
+	delete(e.ringingOffline, callID)
+	e.mu.Unlock()
+	// The first terminate after an offline offer ends its ringing, as it
+	// would for a ringing call we missed live: only these reasons end the
+	// call itself.
+	if ringing && reason != "group_call_ended" && reason != "accepted_elsewhere" {
+		return
+	}
 	if joinable && reason != "group_call_ended" {
 		return
 	}
@@ -207,6 +268,7 @@ func (e *engine) forgetJoinable(callID, why string) {
 		return
 	}
 	delete(e.joinable, callID)
+	delete(e.ringingOffline, callID)
 	notify, list := e.onJoinable, e.joinableListLocked(time.Now())
 	e.mu.Unlock()
 	e.c.log.Debug().Str("call_id", callID).Str("why", why).Msg("group call no longer joinable")

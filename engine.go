@@ -46,6 +46,9 @@ type engine struct {
 	// call-id; onJoinable is told whenever it changes.
 	joinable   map[string]JoinableCall
 	onJoinable func([]JoinableCall)
+	// ringingOffline holds joinable calls that come from an offline offer
+	// and haven't had the terminate that ends their ringing yet.
+	ringingOffline map[string]bool
 	// terminateJoinable records, per call-id, a raw terminate's joinable flag
 	// until whatsmeow's CallTerminate event for it arrives.
 	terminateJoinable map[string]bool
@@ -625,20 +628,23 @@ func (e *engine) placeCall(ctx context.Context, target string, opts CallOptions)
 // preparation step, independent of the later Answer/Reject), and fires the
 // OnIncomingCall listener. Only the <accept> is deferred to Answer.
 func (e *engine) onOffer(ev *events.CallOffer) {
-	// Offline replay: on reconnect the server re-delivers call stanzas queued
-	// while we were away, marking each <call> with an `offline` attribute.
-	// WA Web never rings for those (offerReceivedWhileOffline: no alert, no
-	// call window), it only logs a missed call. whatsmeow sends no preaccept
-	// for them either, so there is nothing here to answer.
-	if ev.Offline {
-		e.c.log.Info().Str("call_id", ev.CallID).Msg("ignoring offer replayed from the offline queue")
-		return
-	}
-
 	// Source of truth: https://github.com/purpshell/meowcaller/blob/33854919e64bdd4b053054ac9764d8fc63027b57/datasheets/voip-group-invite-accept.md#L28-L40
 	groupSnapshot, isGroup, groupErr := signaling.ParseGroupInviteSnapshot(ev.Data)
 	if groupErr != nil {
 		e.c.log.Warn().Err(groupErr).Str("call_id", ev.CallID).Msg("parse inbound group offer failed")
+		return
+	}
+	// Offline replay: on reconnect the server re-delivers call stanzas queued
+	// while we were away, marking each <call> with an `offline` attribute.
+	// WA Web never rings for those (offerReceivedWhileOffline: no alert, no
+	// call window), it only logs a missed call. whatsmeow sends no preaccept
+	// for them either, so there is nothing here to answer. A group call may
+	// still be going on, though, so it can be joined.
+	if ev.Offline {
+		e.c.log.Info().Str("call_id", ev.CallID).Msg("ignoring offer replayed from the offline queue")
+		if isGroup {
+			e.noteOfflineJoinable(ev, groupCallUpdateFromSignaling(*groupSnapshot))
+		}
 		return
 	}
 	if isGroup {
