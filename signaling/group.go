@@ -178,6 +178,16 @@ func BuildActiveGroupAccept(callID string, callCreator types.JID, requestID stri
 	return accept, nil
 }
 
+// GroupCallMinRemoteParticipants is the fewest remote users a new group call may
+// ring: two for an ad-hoc call, one for a call bound to a group.
+func GroupCallMinRemoteParticipants(groupBound bool) int {
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/3d0233a28a6bd9cb30b8bf91f3c43bdb8aeffed6/wacore/src/types/group_call.rs#L17-L23
+	if groupBound {
+		return 1
+	}
+	return 2
+}
+
 // BuildInitialGroupOffer builds an ad-hoc or group-bound initial group offer.
 func BuildInitialGroupOffer(params InitialGroupOfferParams) (waBinary.Node, error) {
 	// Source of truth: https://github.com/purpshell/meowcaller/blob/7cb6045001dafd2514f53e85cd8c3e419c13adbe/datasheets/voip-initial-group-call.md#L63-L101
@@ -187,7 +197,11 @@ func BuildInitialGroupOffer(params InitialGroupOfferParams) (waBinary.Node, erro
 	if params.CallCreator.IsEmpty() {
 		return waBinary.Node{}, fmt.Errorf("signaling: build initial group offer: call creator is required")
 	}
-	if len(params.Participants) < 3 {
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/3d0233a28a6bd9cb30b8bf91f3c43bdb8aeffed6/wacore/src/stanza/group_call.rs#L118-L124
+	if len(params.Participants) < 1+GroupCallMinRemoteParticipants(!params.GroupJID.IsEmpty()) {
+		if !params.GroupJID.IsEmpty() {
+			return waBinary.Node{}, fmt.Errorf("signaling: build initial group offer: self and at least one remote participant are required")
+		}
 		return waBinary.Node{}, fmt.Errorf("signaling: build initial group offer: self and at least two remote participants are required")
 	}
 	users, err := buildGroupUsers(params.Participants, params.CallCreator, params.Video)

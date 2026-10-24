@@ -25,11 +25,11 @@ func (e *engine) placeGroupCall(
 	if self.IsEmpty() {
 		return nil, errors.New("meowcaller: no own LID on this session")
 	}
-	selected, err := e.resolveGroupTargets(ctx, targets, self)
+	groupJID, err := parseOptionalGroupJID(opts.GroupJID)
 	if err != nil {
 		return nil, err
 	}
-	groupJID, err := parseOptionalGroupJID(opts.GroupJID)
+	selected, err := e.resolveGroupTargets(ctx, targets, self, !groupJID.IsEmpty())
 	if err != nil {
 		return nil, err
 	}
@@ -238,6 +238,7 @@ func (e *engine) resolveGroupTargets(
 	ctx context.Context,
 	targets []string,
 	self types.JID,
+	groupBound bool,
 ) ([]types.JID, error) {
 	// Source of truth: https://github.com/purpshell/meowcaller/blob/ceaa2156015e8f24e09328fb7a9c89203295efff/datasheets/api-initial-group-call.md#L82-L99
 	selected := make([]types.JID, 0, len(targets))
@@ -257,7 +258,11 @@ func (e *engine) resolveGroupTargets(
 		seen[participant] = struct{}{}
 		selected = append(selected, participant)
 	}
-	if len(selected) < 2 {
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/3d0233a28a6bd9cb30b8bf91f3c43bdb8aeffed6/src/voip/facade.rs#L851-L916
+	if len(selected) < signaling.GroupCallMinRemoteParticipants(groupBound) {
+		if groupBound {
+			return nil, errors.New("meowcaller: group-bound call requires at least one remote target")
+		}
 		return nil, errors.New("meowcaller: group call requires at least two distinct remote targets")
 	}
 	if len(selected) > 31 {

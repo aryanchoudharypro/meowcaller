@@ -53,6 +53,34 @@ func TestInitialAndInviteGroupOfferShapes(t *testing.T) {
 	}
 }
 
+func TestGroupBoundOfferMayRingOneOtherMember(t *testing.T) {
+	self := types.JID{User: "100001", Server: types.HiddenUserServer, Device: 1}
+	other := types.NewJID("200002", types.HiddenUserServer)
+	pair := []GroupCallParticipant{
+		{JID: self.ToNonAD(), Devices: []GroupCallDevice{{JID: self, CapabilityVersion: 1, Capability: CapabilityOffer}}},
+		{JID: other, Devices: []GroupCallDevice{{JID: types.JID{User: other.User, Server: other.Server, Device: 2}}}},
+	}
+	group := types.NewJID("1234567890-1111111111", types.GroupServer)
+
+	offer, err := BuildInitialGroupOffer(InitialGroupOfferParams{CallID: "CID", CallCreator: self, GroupJID: group, Participants: pair})
+	if err != nil {
+		t.Fatalf("a two-person group's call is a group offer: %v", err)
+	}
+	action := contentNodes(t, offer)[0]
+	if got, _ := action.Attrs["group-jid"].(types.JID); got != group {
+		t.Fatalf("group-jid = %v", action.Attrs["group-jid"])
+	}
+	if groupInfo, ok := getChild(t, action, "group_info"); !ok || len(contentNodes(t, groupInfo)) != 2 {
+		t.Fatalf("group_info = %+v", groupInfo)
+	}
+	if _, err = BuildInitialGroupOffer(InitialGroupOfferParams{CallID: "CID", CallCreator: self, Participants: pair}); err == nil {
+		t.Fatal("an ad-hoc call to one person must stay a 1:1 call")
+	}
+	if _, err = BuildInitialGroupOffer(InitialGroupOfferParams{CallID: "CID", CallCreator: self, GroupJID: group, Participants: pair[:1]}); err == nil {
+		t.Fatal("a group-bound call must still ring someone")
+	}
+}
+
 func TestActiveGroupInviteResponsesUseCallScope(t *testing.T) {
 	creator := types.JID{User: "100001", Server: types.HiddenUserServer, Device: 1}
 	preaccept, err := BuildActiveGroupPreaccept("CID", creator, "PRE", true)
