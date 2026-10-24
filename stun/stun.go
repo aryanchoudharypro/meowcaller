@@ -190,6 +190,30 @@ func BuildWasmStunAllocateRequestWithStreamSsrcs(transactionID [12]byte, relayTo
 	return buildWasmStunAllocateRequest(transactionID, relayToken, endpointXor, CreateWasmStreamDescriptors(streamSsrcs), integrityKey, log...)
 }
 
+// WasmScreenShareStream is our dual-stream (version 3) screen-share layer as an
+// Allocate carries it. A zero value leaves the Allocate exactly as without one.
+type WasmScreenShareStream struct {
+	// SSRCs are the layer's media, FEC and NACK SSRCs.
+	SSRCs [3]uint32
+	// Sharing attaches the receiver PIDs to the layer's sender subscription, so
+	// the relay forwards it to them; set it only while the screen is shared.
+	Sharing bool
+}
+
+// wasmScreenShareStreamLayer is the StreamLayer of ScreenShareVideoStream0.
+const wasmScreenShareStreamLayer = 8
+
+func (s WasmScreenShareStream) enabled() bool { return s.SSRCs[0] != 0 }
+
+// BuildWasmStunAllocateRequestWithScreenShare is BuildWasmStunAllocateRequestWithStreamSsrcs
+// with the screen-share layer's stream descriptors added, as WA Web adds them to
+// every Allocate once dual-stream screen sharing is enabled.
+func BuildWasmStunAllocateRequestWithScreenShare(transactionID [12]byte, relayToken []byte, endpointXor [6]byte, streamSsrcs [9]uint32, screen WasmScreenShareStream, integrityKey []byte, log ...zerolog.Logger) []byte {
+	// Source of truth: WA Web VoIP wasm 5Cl8WJerEpu append_stream_descriptors (func 5812: ScreenShareVideoStream0/1 = layers 8/9 appended when enable_dual_stream_screen_share is on)
+	descriptors := appendWasmScreenShareDescriptors(CreateWasmStreamDescriptors(streamSsrcs), screen)
+	return buildWasmStunAllocateRequest(transactionID, relayToken, endpointXor, descriptors, integrityKey, log...)
+}
+
 // BuildWasmStunAllocateRequestWithGroupSubscriptions adds the participant-specific
 // sender and receiver subscriptions required for group-video forwarding.
 func BuildWasmStunAllocateRequestWithGroupSubscriptions(
@@ -231,13 +255,47 @@ func BuildWasmStunAllocateRequestWithGroupSubscriptionsAndHBHFEC(
 	log ...zerolog.Logger,
 ) []byte {
 	// Source of truth: https://github.com/purpshell/meowcaller/blob/99134bb900df3ee83a69d9a38112e623817597ae/datasheets/group-video-reactions.md#L36-L50
+	return BuildWasmStunAllocateRequestWithGroupSubscriptionsAndScreenShare(
+		transactionID,
+		relayToken,
+		endpointXor,
+		streamSsrcs,
+		appDataSSRC,
+		hbhFECSSRCs,
+		WasmScreenShareStream{},
+		participantPIDs,
+		integrityKey,
+		log...,
+	)
+}
+
+// BuildWasmStunAllocateRequestWithGroupSubscriptionsAndScreenShare is
+// BuildWasmStunAllocateRequestWithGroupSubscriptionsAndHBHFEC with our
+// screen-share layer: its stream descriptors, and its sender subscription after
+// the app-data one.
+//
+// NOT VALIDATED: live-relay only.
+func BuildWasmStunAllocateRequestWithGroupSubscriptionsAndScreenShare(
+	transactionID [12]byte,
+	relayToken []byte,
+	endpointXor [6]byte,
+	streamSsrcs [9]uint32,
+	appDataSSRC uint32,
+	hbhFECSSRCs [2]uint32,
+	screen WasmScreenShareStream,
+	participantPIDs []uint32,
+	integrityKey []byte,
+	log ...zerolog.Logger,
+) []byte {
+	// Source of truth: WA Web VoIP wasm 5Cl8WJerEpu wa_transport_subscription_populate_sender_subscriptions (func 7197: video0, video1, audio, extras, then screen0/screen1 when dual stream is on; screen PIDs at layer BASE)
 	pids := normalizedParticipantPIDs(participantPIDs)
 	if len(pids) == 0 {
-		return BuildWasmStunAllocateRequestWithStreamSsrcs(
+		return BuildWasmStunAllocateRequestWithScreenShare(
 			transactionID,
 			relayToken,
 			endpointXor,
 			streamSsrcs,
+			screen,
 			integrityKey,
 			log...,
 		)
@@ -247,11 +305,17 @@ func BuildWasmStunAllocateRequestWithGroupSubscriptionsAndHBHFEC(
 	if len(pids) > 1 {
 		streamDescriptors = createWasmStreamDescriptorsWithHBHFEC(streamSsrcs, hbhFECSSRCs)
 	}
+	streamDescriptors = appendWasmScreenShareDescriptors(streamDescriptors, screen)
+	senderSubscriptions := createWasmGroupSenderSubscriptions(streamSsrcs, appDataSSRC, pids)
+	if screen.enabled() {
+		var screenPIDs []uint32
+		if screen.Sharing {
+			screenPIDs = pids
+		}
+		senderSubscriptions = append(senderSubscriptions, createWasmSenderSubscription(screen.SSRCs[:], screenPIDs, false)...)
+	}
 	attrs := stunAttr(attrRelayToken, relayToken)
-	attrs = append(attrs, stunAttr(
-		attrSenderSubscriptionsV2,
-		createWasmGroupSenderSubscriptions(streamSsrcs, appDataSSRC, pids),
-	)...)
+	attrs = append(attrs, stunAttr(attrSenderSubscriptionsV2, senderSubscriptions)...)
 	attrs = append(attrs, stunAttr(
 		attrReceiverSubscriptions,
 		createWasmGroupReceiverSubscriptions(pids),
@@ -393,6 +457,30 @@ func createWasmStreamDescriptorsWithHBHFEC(ssrcs [9]uint32, hbhFECSSRCs [2]uint3
 		inner = binary.AppendUvarint(inner, uint64(i+3))
 		inner = pbTag(inner, 2, 0)
 		inner = binary.AppendUvarint(inner, 3)
+		inner = pbTag(inner, 3, 0)
+		inner = binary.AppendUvarint(inner, uint64(ssrc))
+		out = pbLenDelim(out, 1, inner)
+	}
+	return out
+}
+
+// appendWasmScreenShareDescriptors appends the screen-share layer's media, FEC
+// and NACK stream descriptors.
+func appendWasmScreenShareDescriptors(out []byte, screen WasmScreenShareStream) []byte {
+	if !screen.enabled() {
+		return out
+	}
+	for payloadType, ssrc := range screen.SSRCs {
+		if ssrc == 0 {
+			continue
+		}
+		var inner []byte
+		inner = pbTag(inner, 1, 0)
+		inner = binary.AppendUvarint(inner, wasmScreenShareStreamLayer)
+		if payloadType != 0 {
+			inner = pbTag(inner, 2, 0)
+			inner = binary.AppendUvarint(inner, uint64(payloadType))
+		}
 		inner = pbTag(inner, 3, 0)
 		inner = binary.AppendUvarint(inner, uint64(ssrc))
 		out = pbLenDelim(out, 1, inner)

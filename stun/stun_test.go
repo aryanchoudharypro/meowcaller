@@ -300,3 +300,58 @@ func TestPongMatching(t *testing.T) {
 		t.Error("pong with wrong tx falsely matched")
 	}
 }
+
+func TestWasmAllocateScreenShareLayer(t *testing.T) {
+	var tx [12]byte
+	token := bytes.Repeat([]byte{0x42}, 32)
+	key := bytes.Repeat([]byte{0x24}, 16)
+	endpoint := [6]byte{1, 2, 3, 4, 5, 6}
+	ssrcs := [9]uint32{1, 2, 3, 4, 5, 6, 7, 8, 9}
+	pids := []uint32{2, 1}
+
+	// Without a screen layer the allocations are byte for byte the old ones.
+	if !bytes.Equal(
+		BuildWasmStunAllocateRequestWithGroupSubscriptionsAndScreenShare(tx, token, endpoint, ssrcs, 10, [2]uint32{11, 12}, WasmScreenShareStream{}, pids, key),
+		BuildWasmStunAllocateRequestWithGroupSubscriptionsAndHBHFEC(tx, token, endpoint, ssrcs, 10, [2]uint32{11, 12}, pids, key),
+	) {
+		t.Fatal("a zero screen layer changed the group allocation")
+	}
+	if !bytes.Equal(
+		BuildWasmStunAllocateRequestWithScreenShare(tx, token, endpoint, ssrcs, WasmScreenShareStream{}, key),
+		BuildWasmStunAllocateRequestWithStreamSsrcs(tx, token, endpoint, ssrcs, key),
+	) {
+		t.Fatal("a zero screen layer changed the 1:1 allocation")
+	}
+
+	screen := WasmScreenShareStream{SSRCs: [3]uint32{0x101, 0x102, 0x103}}
+	descriptors := appendWasmScreenShareDescriptors(nil, screen)
+	want := []byte{
+		0x0a, 0x05, 0x08, 0x08, 0x18, 0x81, 0x02,
+		0x0a, 0x07, 0x08, 0x08, 0x10, 0x01, 0x18, 0x82, 0x02,
+		0x0a, 0x07, 0x08, 0x08, 0x10, 0x02, 0x18, 0x83, 0x02,
+	}
+	if !bytes.Equal(descriptors, want) {
+		t.Fatalf("screen descriptors = %x, want %x", descriptors, want)
+	}
+
+	subscriptions := func(screen WasmScreenShareStream) []byte {
+		packet := BuildWasmStunAllocateRequestWithGroupSubscriptionsAndScreenShare(tx, token, endpoint, ssrcs, 10, [2]uint32{}, screen, pids, key)
+		for _, attr := range ParseStunAttributes(packet) {
+			if attr.AttrType == attrSenderSubscriptionsV2 {
+				return attr.Value
+			}
+		}
+		t.Fatal("no sender subscriptions")
+		return nil
+	}
+	base := createWasmGroupSenderSubscriptions(ssrcs, 10, []uint32{1, 2})
+	idle := subscriptions(screen)
+	if !bytes.Equal(idle, append(bytes.Clone(base), createWasmSenderSubscription(screen.SSRCs[:], nil, false)...)) {
+		t.Fatalf("idle screen subscription = %x", idle)
+	}
+	screen.Sharing = true
+	sharing := subscriptions(screen)
+	if !bytes.Equal(sharing, append(bytes.Clone(base), createWasmSenderSubscription(screen.SSRCs[:], []uint32{1, 2}, false)...)) {
+		t.Fatalf("sharing screen subscription = %x", sharing)
+	}
+}

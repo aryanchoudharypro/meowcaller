@@ -62,6 +62,29 @@ func DeriveWasmScreenShareSsrc(callID, lid string, streamID int, log ...zerolog.
 	return DeriveWasmParticipantSsrc(callID, identifier+"_ss", VideoSlotWord, pickLog(log))
 }
 
+// ScreenShareSlotWords are the slot words of a screen-share layer's media, FEC and
+// NACK SSRCs, the same slots as the camera's video triple.
+var ScreenShareSlotWords = [3]uint32{VideoSlotWord, 3, 5}
+
+// DeriveWasmScreenShareSsrcs derives the media, FEC and NACK SSRCs of one
+// screen-share video layer, with the identifier DeriveWasmScreenShareSsrc uses.
+func DeriveWasmScreenShareSsrcs(callID, lid string, streamID int, log ...zerolog.Logger) ([3]uint32, error) {
+	// Source of truth: WA Web VoIP wasm 5Cl8WJerEpu call_generate_ssrc_for_identifier (func 12261: secure-ssrc callback index 2/3/5 for media/fec/nack)
+	identifier := lid
+	if streamID > 0 {
+		identifier += "_" + strconv.Itoa(streamID)
+	}
+	var out [3]uint32
+	for i, slot := range ScreenShareSlotWords {
+		ssrc, err := DeriveWasmParticipantSsrc(callID, identifier+"_ss", slot, pickLog(log))
+		if err != nil {
+			return [3]uint32{}, err
+		}
+		out[i] = ssrc
+	}
+	return out, nil
+}
+
 // DeriveWasmRelayStreamSsrcs derives all 9 relay-stream SSRCs in slot order.
 func DeriveWasmRelayStreamSsrcs(callID, lid string, log ...zerolog.Logger) ([9]uint32, error) {
 	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/41095d4e6ba4610e054e9ede3af1d5e88a83faee/wacore/src/voip/ssrc.rs#L20-L22

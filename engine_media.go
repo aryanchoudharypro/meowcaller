@@ -134,7 +134,7 @@ func (e *engine) maybeStartMedia(callID string) {
 // multi=false preserves the original single-relay behavior (group calls).
 //
 // NOT VALIDATED: live-relay only.
-func (e *engine) connectAndAllocateAll(ctx context.Context, rd *relayData, streamSsrcs [9]uint32, inbound bool, multi bool) (*relayFanout, error) {
+func (e *engine) connectAndAllocateAll(ctx context.Context, rd *relayData, streamSsrcs [9]uint32, screen stun.WasmScreenShareStream, inbound bool, multi bool) (*relayFanout, error) {
 	primary := getMediaRelayEndpoint(rd, inbound)
 	if primary == nil || len(primary.addresses) == 0 {
 		return nil, fmt.Errorf("relay has no usable endpoint")
@@ -160,7 +160,7 @@ func (e *engine) connectAndAllocateAll(ctx context.Context, rd *relayData, strea
 	var allocs [][]byte
 	var names []string
 	for _, ep := range targets {
-		ch, allocate, err := e.connectOneRelay(ctx, rd, ep, streamSsrcs)
+		ch, allocate, err := e.connectOneRelay(ctx, rd, ep, streamSsrcs, screen)
 		if err != nil {
 			// Secondary relays failing is survivable; the primary failing with
 			// no fallback is not.
@@ -183,7 +183,7 @@ func (e *engine) connectAndAllocateAll(ctx context.Context, rd *relayData, strea
 // keepalive).
 //
 // NOT VALIDATED: live-relay only.
-func (e *engine) connectOneRelay(ctx context.Context, rd *relayData, ep *relayEndpoint, streamSsrcs [9]uint32) (*relay.RelayMediaChannel, []byte, error) {
+func (e *engine) connectOneRelay(ctx context.Context, rd *relayData, ep *relayEndpoint, streamSsrcs [9]uint32, screen stun.WasmScreenShareStream) (*relay.RelayMediaChannel, []byte, error) {
 	log := e.c.log
 	ch, err := e.dialRelay(ctx, ep)
 	if err != nil {
@@ -210,7 +210,7 @@ func (e *engine) connectOneRelay(ctx context.Context, rd *relayData, ep *relayEn
 	}
 	var tx [12]byte
 	_, _ = rand.Read(tx[:])
-	allocate := stun.BuildWasmStunAllocateRequestWithStreamSsrcs(tx, rd.relayTokens[ep.tokenID], endpointXor, streamSsrcs, rd.relayKeyASCII, log)
+	allocate := stun.BuildWasmStunAllocateRequestWithScreenShare(tx, rd.relayTokens[ep.tokenID], endpointXor, streamSsrcs, screen, rd.relayKeyASCII, log)
 	if _, err := ch.Send(allocate); err != nil {
 		ch.Close()
 		return nil, nil, fmt.Errorf("allocate send: %w", err)
@@ -219,7 +219,7 @@ func (e *engine) connectOneRelay(ctx context.Context, rd *relayData, ep *relayEn
 	e.c.diag.Emit("stun", map[string]any{
 		"event": "allocate_sent", "bytes": len(allocate),
 		"tx_id_hex":    hex.EncodeToString(tx[:]),
-		"stream_ssrcs": streamSsrcs,
+		"stream_ssrcs": streamSsrcs, "screen_ssrcs": screen.SSRCs,
 	})
 	return ch, allocate, nil
 }
@@ -341,6 +341,14 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 	if err != nil {
 		return err
 	}
+	// Dual stream adds our screen layer to every allocation for the whole call,
+	// as WA Web does while its switch is on, so a share needs no new streams.
+	var screenStream stun.WasmScreenShareStream
+	if e.dualStream.Load() {
+		if screenStream.SSRCs, err = rtp.DeriveWasmScreenShareSsrcs(callID, selfParticipantID, 0, log); err != nil {
+			return err
+		}
+	}
 	e.mu.Lock()
 	isGroup := false
 	if mm := e.calls[callID]; mm != nil {
@@ -360,7 +368,7 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 		})
 	}
 
-	ch, err := e.connectAndAllocateAll(ctx, rd, streamSsrcs, inbound, !isGroup)
+	ch, err := e.connectAndAllocateAll(ctx, rd, streamSsrcs, screenStream, inbound, !isGroup)
 	if err != nil {
 		return err
 	}
@@ -370,6 +378,7 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 		rd.relayKeyASCII,
 		[2]uint32{hbhFECTXSSRC, hbhFECRXSSRC},
 	)
+	allocateState.SetScreenShare(screenStream)
 
 	// Send a consent ping (0x0801) immediately, together with the allocate and BEFORE any
 	// RTP. The relay won't forward the peer's media until consent (ping → pong) is
@@ -391,6 +400,7 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 		Str("ssrc", fmt.Sprintf("0x%08x", ssrc)).
 		Str("video_ssrc", fmt.Sprintf("0x%08x", videoSelfSsrc)).
 		Str("app_data_ssrc", fmt.Sprintf("0x%08x", appDataSelfSsrc)).
+		Str("screen_ssrc", fmt.Sprintf("0x%08x", screenStream.SSRCs[0])).
 		Msg("media session")
 	e.c.diag.Emit("ssrc", map[string]any{
 		"call_id": callID, "ssrc": ssrc, "video_ssrc": videoSelfSsrc, "app_data_ssrc": appDataSelfSsrc,
@@ -684,6 +694,12 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 				if update != nil {
 					subscribedPIDs = connectedRemoteParticipantPIDs(*update, audioReceivers.selfID)
 				}
+				if screenStream.SSRCs[0] != 0 {
+					e.mu.Lock()
+					screenStream.Sharing = current != nil && current.screenVersion >= 3
+					e.mu.Unlock()
+					allocateState.SetScreenShare(screenStream)
+				}
 				if update != nil && allocateState.Pending(update.Relay, subscribedPIDs) {
 					var relayTx [12]byte
 					_, err := rand.Read(relayTx[:])
@@ -882,6 +898,30 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 		ch: ch, ssrc: videoSelfSsrc, callID: callID, keyframeRequired: true,
 		log: log, diag: e.c.diag,
 	}
+	// Dual stream: the screen layer gets its own pipeline and SRTCP session on
+	// its own SSRC, so the camera keeps streaming on the video one.
+	var ssender *videoSender
+	var screenRtcp *mediaSrtcpSender
+	var txScreenPipe *MediaPipeline
+	if screenSsrc := screenStream.SSRCs[0]; screenSsrc != 0 {
+		if txScreenPipe, err = NewMediaPipeline(callKey, selfLID, peerLID, screenSsrc, FrameSamples, WithLogger(log)); err != nil {
+			return err
+		}
+		if err = audioReceivers.attachSendPipeline(txScreenPipe); err != nil {
+			return fmt.Errorf("attach screen RTP sender: %w", err)
+		}
+		if screenRtcp, err = newMediaSrtcpSender(callKey, selfLID, screenSsrc, true); err != nil {
+			return err
+		}
+		if err = audioReceivers.attachSRTCPSender(screenRtcp); err != nil {
+			return fmt.Errorf("attach screen SRTCP sender: %w", err)
+		}
+		ssender = &videoSender{
+			pipe: txScreenPipe, stream: rtp.NewVideoRtpStream(screenSsrc, defaultVideoRtpStepSamples),
+			ch: ch, ssrc: screenSsrc, callID: callID, keyframeRequired: true,
+			log: log, diag: e.c.diag,
+		}
+	}
 	txAppDataPipe, err := NewMediaPipeline(callKey, selfLID, peerLID, appDataSelfSsrc, FrameSamples, WithLogger(log))
 	if err != nil {
 		return err
@@ -904,6 +944,13 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 		vsender.sendGated = m.videoGate
 		m.videoTx = vsender
 		m.appDataTx = appSender
+		if ssender != nil {
+			// A share started before media came up goes out from the first frame.
+			if m.screenVersion >= 3 {
+				ssender.enable(false)
+			}
+			m.screenTx = ssender
+		}
 	}
 	e.mu.Unlock()
 	defer func() {
@@ -911,10 +958,16 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 		vsender.mu.Lock()
 		vsender.ch = nil
 		vsender.mu.Unlock()
+		if ssender != nil {
+			ssender.mu.Lock()
+			ssender.ch = nil
+			ssender.mu.Unlock()
+		}
 		e.mu.Lock()
 		if m := e.calls[callID]; m != nil {
 			m.videoTx = nil
 			m.appDataTx = nil
+			m.screenTx = nil
 		}
 		e.mu.Unlock()
 	}()
@@ -1015,6 +1068,24 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 						return
 					}
 				}
+				if txScreenPipe != nil {
+					if screenStats := txScreenPipe.SenderStats(); screenStats.PacketsSent > 0 {
+						_, err = sendMediaSrtcpReceptionReports(
+							screenRtcp,
+							screenStats,
+							nowMs,
+							nil,
+							groupMode.Load() && audioReceivers.HasCommittedGroupUpdate(),
+							func(packet []byte) error {
+								_, sendErr := ch.Send(packet)
+								return sendErr
+							},
+						)
+						if err != nil {
+							return
+						}
+					}
+				}
 				sent++
 				if sent == 1 {
 					log.Info().Msg("started periodic SRTCP sender reports")
@@ -1106,6 +1177,13 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 					call.requestVideoKeyframe()
 				}
 				log.Debug().Uint32("video_ssrc", videoSelfSsrc).Msg("peer requested a video keyframe")
+			}
+			if ssender != nil && rtp.RtcpRequestsKeyframe(plain, ssender.ssrc) {
+				ssender.requestKeyframe()
+				if call != nil {
+					call.requestScreenKeyframe()
+				}
+				log.Debug().Uint32("screen_ssrc", ssender.ssrc).Msg("peer requested a screen keyframe")
 			}
 			if reportSsrc, ntpSeconds, ntpFraction, ok := rtp.ParseSenderReportTiming(plain); ok {
 				nowMs := uint64(time.Now().UnixMilli())

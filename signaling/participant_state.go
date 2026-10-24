@@ -75,10 +75,23 @@ func BuildScreenShare(
 	state ScreenShareState,
 	screenShareID *uint32,
 ) waBinary.Node {
+	return BuildScreenShareVersion(callID, to, creator, requestID, state, 2, screenShareID)
+}
+
+// BuildScreenShareVersion is BuildScreenShare with an explicit version: 2 shares
+// the screen in place of the camera, 3 (dual stream) on its own stream.
+func BuildScreenShareVersion(
+	callID string,
+	to, creator types.JID,
+	requestID string,
+	state ScreenShareState,
+	version int,
+	screenShareID *uint32,
+) waBinary.Node {
 	// Source of truth: https://github.com/purpshell/meowcaller/blob/36d54857c74e45ccb08f6444a32d2afa13f20be9/datasheets/group-video-reactions.md#L44-L56
 	attrs := waBinary.Attrs{
 		"call-id": callID, "call-creator": creator,
-		"screenshare_state": strconv.Itoa(int(state)), "version": "2",
+		"screenshare_state": strconv.Itoa(int(state)), "version": strconv.Itoa(version),
 	}
 	if screenShareID != nil {
 		attrs["screen_share_id"] = strconv.FormatUint(uint64(*screenShareID), 10)
