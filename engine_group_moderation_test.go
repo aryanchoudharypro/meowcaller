@@ -82,3 +82,15 @@ func TestMuteRequestMutesUs(t *testing.T) {
 		t.Fatal("still unmuted after a mute request")
 	}
 }
+
+func TestWaitingRoomAdminCanRemove(t *testing.T) {
+	eng, call, _ := activeGroupCall(t)
+	eng.calls["GCALL"].link = true
+	if call.CanRemoveParticipants() {
+		t.Fatal("a link call guest who isn't an admin can remove")
+	}
+	call.setWaitingRoomState(WaitingRoomState{IsAdmin: true, TransactionID: 1})
+	if !call.CanRemoveParticipants() {
+		t.Fatal("a waiting-room admin can't remove")
+	}
+}

@@ -15,7 +15,8 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
   one of the two attributes).
 - `Call.RemoveParticipant` sends `<remove_user jid>` to `<call-id>@call`
   (serialize_remove_user). Like WA Web, only the creator of a call-link call
-  may remove people; `Call.CanRemoveParticipants` says whether we can.
+  or one of its waiting-room admins may remove people;
+  `Call.CanRemoveParticipants` says whether we can.
 - A mute request to us in a group call now mutes us, announces it with our
   own `<mute_v2 mute-state="1">` and fires `Call.OnMuteRequested`. Before, it
   was read as the peer's own mute state. Requests in 1:1 calls and from our

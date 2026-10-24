@@ -15,8 +15,8 @@ func (c *Call) RequestPeerMute(ctx context.Context, user string) error {
 	return c.eng.requestPeerMute(ctx, c.id, user)
 }
 
-// RemoveParticipant removes one participant from this group call. Only the
-// creator of a call-link call can remove people, as in WA.
+// RemoveParticipant removes one participant from this group call. As in WA,
+// only a call-link call's creator or waiting-room admins can remove people.
 func (c *Call) RemoveParticipant(ctx context.Context, user string) error {
 	return c.eng.removeParticipant(ctx, c.id, user)
 }
@@ -106,7 +106,7 @@ func (e *engine) removeParticipant(ctx context.Context, callID, user string) err
 }
 
 // callAdmin returns the call's creator when this client may remove people:
-// WA only offers it to the creator of a call-link call.
+// WA only offers it in a call-link call, to its creator or a waiting-room admin.
 func (e *engine) callAdmin(callID string) (types.JID, error) {
 	// Source of truth: https://github.com/oxidezap/whatspec/blob/46f630441389e703e04ff3fc012192cf80fdd4ba/generated/wasm.lock.json#L1-L4
 	e.mu.Lock()
@@ -116,8 +116,10 @@ func (e *engine) callAdmin(callID string) (types.JID, error) {
 		return types.EmptyJID, errors.New("meowcaller: group call is not active")
 	}
 	self, _ := types.ParseJID(m.selfLID)
-	if !m.link || m.creator.IsEmpty() || m.creator.User != self.User {
-		return types.EmptyJID, errors.New("meowcaller: only the call link's creator can remove people")
+	room, _ := m.call.WaitingRoomState()
+	creator := !m.creator.IsEmpty() && m.creator.User == self.User
+	if !m.link || m.creator.IsEmpty() || (!creator && !room.IsAdmin) {
+		return types.EmptyJID, errors.New("meowcaller: only the call link's creator or admins can remove people")
 	}
 	return m.creator, nil
 }
