@@ -42,6 +42,13 @@ type engine struct {
 	// dualStream turns on dual-stream (version 3) screen sharing for calls whose
 	// media starts after it is set: see Client.SetDualStreamScreenShare.
 	dualStream atomic.Bool
+	// joinable holds the group calls we're invited to but not in, keyed by
+	// call-id; onJoinable is told whenever it changes.
+	joinable   map[string]JoinableCall
+	onJoinable func([]JoinableCall)
+	// terminateJoinable records, per call-id, a raw terminate's joinable flag
+	// until whatsmeow's CallTerminate event for it arrives.
+	terminateJoinable map[string]bool
 }
 
 // engineCall is the engine's per-call state: the public Call handle plus the inputs
@@ -1490,6 +1497,17 @@ func (e *engine) onCallRaw(callNode *waBinary.Node) bool {
 		}
 		e.onUnknownCallEvent(callNode)
 		return true
+	case "terminate":
+		// whatsmeow's CallTerminate drops the joinable flag; keep it for onTerminate.
+		if callID := kids[0].AttrGetter().OptionalString("call-id"); callID != "" {
+			e.mu.Lock()
+			if e.terminateJoinable == nil || len(e.terminateJoinable) > 64 {
+				e.terminateJoinable = map[string]bool{}
+			}
+			e.terminateJoinable[callID] = terminateIsJoinable(&kids[0])
+			e.mu.Unlock()
+		}
+		return false
 	case "mute_v2":
 		mv := kids[0].AttrGetter()
 		callID := mv.String("call-id")
@@ -1641,6 +1659,15 @@ func (e *engine) onVideoStanza(v *waBinary.Node) {
 // onTerminate tears down a call's media and fires the Call's OnEnd listener.
 func (e *engine) onTerminate(callID, reason string) {
 	e.c.log.Info().Str("call_id", callID).Str("reason", reason).Msg("call terminated")
+	e.mu.Lock()
+	joinable := e.terminateJoinable[callID]
+	delete(e.terminateJoinable, callID)
+	inCall := e.calls[callID] != nil
+	e.mu.Unlock()
+	if !inCall {
+		e.onJoinableTerminate(callID, reason, joinable)
+		return
+	}
 	e.finishCall(callID, reason)
 }
 
@@ -1684,6 +1711,17 @@ func (e *engine) finishCall(callID, reason string) {
 	}
 	if call == nil || call.State() == CallPhaseEnded {
 		return
+	}
+	e.mu.Lock()
+	becameJoinable := e.noteJoinableLocked(callID, m, call.State(), reason, time.Now())
+	var notifyJoinable func([]JoinableCall)
+	var joinableList []JoinableCall
+	if becameJoinable {
+		notifyJoinable, joinableList = e.onJoinable, e.joinableListLocked(time.Now())
+	}
+	e.mu.Unlock()
+	if notifyJoinable != nil {
+		notifyJoinable(joinableList)
 	}
 	call.mu.Lock()
 	player := call.player

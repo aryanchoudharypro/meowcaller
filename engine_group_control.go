@@ -28,6 +28,9 @@ func (e *engine) onUnknownCallEvent(node *waBinary.Node) {
 			return
 		}
 		update := groupCallUpdateFromSignaling(*parsed)
+		if e.onJoinableGroupUpdate(update) {
+			return
+		}
 		// Only a fresh committed roster requests an epoch: a relay-only adoption
 		// must not replay its (older) carrying roster's rekey request. The fan-out
 		// goes to the committed, PID-stabilized participants.

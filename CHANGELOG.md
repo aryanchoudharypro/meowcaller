@@ -7,6 +7,21 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### engine — join an ongoing group call — `implemented`
+
+- A group call we missed, declined or left while others stayed is now kept
+  as joinable (`Client.JoinableCalls`, `Client.OnJoinableCalls`) until a
+  terminate without `joinable="1"`, a roster with nobody connected, or three
+  hours without news. `Client.JoinOngoingCall` joins one the way WA's VoIP
+  engine does (join_ongoing_call builds the offer locally and then
+  join_and_accept accepts it, with no new offer on the wire): it sends the
+  late group `<accept>` to `<call-id>@call` and lets the server's roster,
+  relay and a participant's `enc_rekey` bring media up. A join with no roster
+  within 20 s ends as `CallEndJoinFailed`.
+- Validated by the `engine_group_join_test.go` unit tests. Not yet tried on a
+  live call; which terminates a joinable call gets from the server is
+  inferred from the wasm's "joinable terminate" handling.
+
 ### engine/signaling — group call key retry (enc_rekey_retry) — `implemented`
 
 - A group call participant that can't decrypt our `enc_rekey` (a stale Signal
