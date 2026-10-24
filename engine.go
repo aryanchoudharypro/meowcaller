@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -62,6 +63,7 @@ type engineCall struct {
 	offeredDevices       []types.JID
 	peerBareJID          types.JID
 	notifiedOtherDevices bool
+	sentCallerTransport  bool // our <transport> answering the callee's accept went out
 
 	direction  CallDirection
 	codec      AudioCodec // audio codec for this call: voip_settings, gated by the peer's capability
@@ -1068,7 +1070,16 @@ func (e *engine) onAccept(ev *events.CallAccept) {
 	var terminateOthers []types.JID
 	var terminateTo, terminateCreator types.JID
 	answeringPeer := ev.From.String()
+	var sendTransport bool
+	var transportCreator types.JID
 	if current := e.calls[ev.CallID]; current != nil {
+		if !current.sentCallerTransport && !ev.From.IsEmpty() {
+			current.sentCallerTransport, sendTransport = true, true
+			transportCreator = ev.CallCreator
+			if transportCreator.IsEmpty() {
+				transportCreator = current.creator
+			}
+		}
 		if device, ok := inviteDeviceCapability(ev.From, ev.Data); ok {
 			current.invitePeerDevice = device
 		}
@@ -1116,6 +1127,9 @@ func (e *engine) onAccept(ev *events.CallAccept) {
 		} else {
 			e.c.log.Info().Str("call_id", ev.CallID).Int("device_count", len(terminateOthers)).Msg("notified other devices call was accepted elsewhere")
 		}
+	}
+	if sendTransport {
+		e.sendCallerTransport(ev.CallID, ev.From, transportCreator)
 	}
 	if m.call != nil && m.call.State() < CallPhaseConnecting {
 		m.call.setPhase(CallPhaseConnecting)
@@ -1339,6 +1353,88 @@ func (e *engine) onCallAck(ack *waBinary.Node) {
 	}
 	e.mu.Unlock()
 	e.onRelay(callID, ack)
+	if ack.AttrGetter().OptionalString("type") == "offer" {
+		e.sendCallerRelayLatency(callID, ack)
+	}
+}
+
+// sendCallerRelayLatency announces, as the caller, the relay we dial to the callee
+// devices the offer ack lists. Without it some relays never route the callee's RTP
+// to us.
+func (e *engine) sendCallerRelayLatency(callID string, ack *waBinary.Node) {
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/069bac38c0e9639ff4c4a7bac2473a3688764bc5/src/voip/facade.rs#L2379-L2412
+	e.mu.Lock()
+	m := e.calls[callID]
+	if m == nil || m.group || m.direction != CallDirectionOutgoing || m.relay == nil {
+		e.mu.Unlock()
+		return
+	}
+	ep := getMediaRelayEndpoint(m.relay, false)
+	to, creator := m.peerBareJID, m.creator
+	e.mu.Unlock()
+	if ep == nil || len(ep.te2) != 6 || to.IsEmpty() {
+		e.c.log.Warn().Str("call_id", callID).Msg("caller relaylatency skipped: no IPv4 relay or callee")
+		return
+	}
+	latency := ep.c2rRTTMs
+	if latency == 0 {
+		latency = 40
+	}
+	devices := offerAckDevices(ack)
+	node := signaling.BuildRelayLatency(&signaling.RelayLatencyParams{
+		CallID: callID, To: to, CallCreator: creator,
+		LatencyMs: latency, RelayName: ep.relayName, AddressBytes: ep.te2, Devices: devices,
+	})
+	e.sendCallerSignal(callID, "relaylatency", node)
+}
+
+// sendCallerTransport answers the callee's <accept> with our <transport>, as the
+// phone does when it is the caller.
+func (e *engine) sendCallerTransport(callID string, to, creator types.JID) {
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/069bac38c0e9639ff4c4a7bac2473a3688764bc5/src/handlers/call.rs#L627-L646
+	round, msgType := "1", "1"
+	node := signaling.BuildTransport(&signaling.TransportParams{
+		CallID: callID, To: to, CallCreator: creator,
+		P2PCandRound: &round, TransportMessageType: &msgType,
+	})
+	e.sendCallerSignal(callID, "transport", node)
+}
+
+// sendCallerSignal sends a caller-side call stanza with an id on the <call> wrapper;
+// the server ignores these without one.
+func (e *engine) sendCallerSignal(callID, what string, node waBinary.Node) {
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/069bac38c0e9639ff4c4a7bac2473a3688764bc5/src/voip/facade.rs#L2338-L2376
+	node.Attrs["id"] = e.nextCallNodeID()
+	if err := e.transmitCallNode(context.Background(), node); err != nil {
+		e.c.log.Warn().Err(err).Str("call_id", callID).Msg("send caller " + what + " failed")
+		return
+	}
+	e.c.log.Info().Str("call_id", callID).Msg("sent caller " + what)
+}
+
+// offerAckDevices lists the callee devices the server names in its <ack type=offer>
+// (<user><device jid>), skipping the relay block.
+func offerAckDevices(ack *waBinary.Node) []types.JID {
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/069bac38c0e9639ff4c4a7bac2473a3688764bc5/src/voip/facade.rs#L2304-L2328
+	var out []types.JID
+	var walk func(n *waBinary.Node)
+	walk = func(n *waBinary.Node) {
+		kids := n.GetChildren()
+		for i := range kids {
+			child := &kids[i]
+			switch child.Tag {
+			case "relay":
+			case "device":
+				if jid := child.AttrGetter().OptionalJID("jid"); jid != nil && !slices.Contains(out, *jid) {
+					out = append(out, *jid)
+				}
+			default:
+				walk(child)
+			}
+		}
+	}
+	walk(ack)
+	return out
 }
 
 // onCallRaw sees every raw <call> node before whatsmeow processes it. It surfaces the
@@ -1766,6 +1862,8 @@ type relayEndpoint struct {
 	authTokenID uint32
 	isFNA       bool
 	addresses   []relayAddress
+	te2         []byte // the raw 6-byte <te2> address
+	c2rRTTMs    uint32 // server-measured client-to-relay RTT; 0 = absent
 }
 
 type relayData struct {
@@ -1904,6 +2002,8 @@ func parseRelayData(node *waBinary.Node) *relayData {
 			tokenID:     attrUint(child, "token_id"),
 			authTokenID: attrUint(child, "auth_token_id"),
 			isFNA:       child.AttrGetter().String("is_fna") == "1",
+			te2:         ab,
+			c2rRTTMs:    attrUint(child, "c2r_rtt"),
 			addresses: []relayAddress{{
 				ipv4: fmt.Sprintf("%d.%d.%d.%d", ab[0], ab[1], ab[2], ab[3]),
 				port: binary.BigEndian.Uint16(ab[4:6]),

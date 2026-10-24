@@ -55,7 +55,9 @@ func TestOutgoingAcceptNotifiesOtherOfferedDevices(t *testing.T) {
 	var sent []waBinary.Node
 	eng.sendCallNode = func(_ context.Context, node waBinary.Node) error {
 		mu.Lock()
-		sent = append(sent, node)
+		if !isCallAction(node, "transport") {
+			sent = append(sent, node)
+		}
 		mu.Unlock()
 		return nil
 	}
@@ -119,7 +121,9 @@ func TestOutgoingAcceptNotifiesOtherDevicesOnlyOnce(t *testing.T) {
 	var sent []waBinary.Node
 	eng.sendCallNode = func(_ context.Context, node waBinary.Node) error {
 		mu.Lock()
-		sent = append(sent, node)
+		if !isCallAction(node, "transport") {
+			sent = append(sent, node)
+		}
 		mu.Unlock()
 		return nil
 	}
@@ -150,7 +154,9 @@ func TestOutgoingAcceptSkipsNotifyWhenOnlyOneDeviceWasOffered(t *testing.T) {
 	var sent []waBinary.Node
 	eng.sendCallNode = func(_ context.Context, node waBinary.Node) error {
 		mu.Lock()
-		sent = append(sent, node)
+		if !isCallAction(node, "transport") {
+			sent = append(sent, node)
+		}
 		mu.Unlock()
 		return nil
 	}
@@ -164,5 +170,87 @@ func TestOutgoingAcceptSkipsNotifyWhenOnlyOneDeviceWasOffered(t *testing.T) {
 	defer mu.Unlock()
 	if len(sent) != 0 {
 		t.Fatalf("sent %d call nodes, want 0 (no other devices to notify)", len(sent))
+	}
+}
+
+func isCallAction(node waBinary.Node, tag string) bool {
+	children := node.GetChildren()
+	return len(children) == 1 && children[0].Tag == tag
+}
+
+// TestOutgoingAcceptSendsCallerTransportOnce: as the caller we answer the callee's
+// <accept> with our <transport>, addressed to the answering device and carrying an id
+// on the <call> wrapper, once per call.
+func TestOutgoingAcceptSendsCallerTransportOnce(t *testing.T) {
+	answering := peerJID()
+	answering.Device = 14
+	eng, _ := testEngineWithOutgoingCallToDevices([]types.JID{answering})
+
+	var sent []waBinary.Node
+	eng.sendCallNode = func(_ context.Context, node waBinary.Node) error {
+		if isCallAction(node, "transport") {
+			sent = append(sent, node)
+		}
+		return nil
+	}
+	for i := 0; i < 2; i++ {
+		eng.onAccept(&events.CallAccept{
+			BasicCallMeta: types.BasicCallMeta{CallID: "CID", From: answering},
+			Data:          &waBinary.Node{Tag: "accept"},
+		})
+	}
+	if len(sent) != 1 {
+		t.Fatalf("sent %d transports across two accepts, want 1", len(sent))
+	}
+	wrapper := sent[0].AttrGetter()
+	if wrapper.JID("to") != answering || wrapper.OptionalString("id") == "" {
+		t.Fatalf("transport wrapper = %#v, want to=answering device with an id", sent[0].Attrs)
+	}
+	action := sent[0].GetChildren()[0].AttrGetter()
+	if action.String("call-id") != "CID" || action.JID("call-creator") != creatorJID() ||
+		action.String("p2p-cand-round") != "1" || action.String("transport-message-type") != "1" {
+		t.Fatalf("transport attrs = %#v", sent[0].GetChildren()[0].Attrs)
+	}
+}
+
+// TestOfferAckSendsCallerRelayLatency: the offer ack's relay is announced to the
+// callee devices the ack lists, with the server's c2r_rtt as the latency.
+func TestOfferAckSendsCallerRelayLatency(t *testing.T) {
+	device := peerJID()
+	device.Device = 14
+	eng, _ := testEngineWithOutgoingCallToDevices([]types.JID{device})
+	eng.calls["CID"].relay = &relayData{
+		relayTokens: [][]byte{[]byte("tok")},
+		endpoints: []relayEndpoint{{
+			relayName: "gru1c02", authTokenID: 1, c2rRTTMs: 33,
+			te2: []byte{157, 240, 226, 133, 0x0d, 0x96},
+		}},
+	}
+	var sent []waBinary.Node
+	eng.sendCallNode = func(_ context.Context, node waBinary.Node) error {
+		sent = append(sent, node)
+		return nil
+	}
+	ack := &waBinary.Node{Tag: "ack", Attrs: waBinary.Attrs{"class": "call", "type": "offer"}, Content: []waBinary.Node{
+		{Tag: "relay", Content: []waBinary.Node{{Tag: "device", Attrs: waBinary.Attrs{"jid": types.NewJID("999", types.HiddenUserServer)}}}},
+		{Tag: "user", Content: []waBinary.Node{{Tag: "device", Attrs: waBinary.Attrs{"jid": device}}}},
+	}}
+	if got := offerAckDevices(ack); len(got) != 1 || got[0] != device {
+		t.Fatalf("offerAckDevices = %v, want [%s] (relay block skipped)", got, device)
+	}
+	eng.sendCallerRelayLatency("CID", ack)
+	if len(sent) != 1 || !isCallAction(sent[0], "relaylatency") {
+		t.Fatalf("sent %#v, want one relaylatency", sent)
+	}
+	if sent[0].AttrGetter().JID("to") != peerJID() || sent[0].AttrGetter().OptionalString("id") == "" {
+		t.Fatalf("relaylatency wrapper = %#v", sent[0].Attrs)
+	}
+	rl := sent[0].GetChildren()[0]
+	te := rl.GetChildren()[0].AttrGetter()
+	if te.String("relay_name") != "gru1c02" || te.String("latency") != "33554465" {
+		t.Fatalf("te attrs = %#v", rl.GetChildren()[0].Attrs)
+	}
+	if dest := rl.GetChildren(); len(dest) != 2 || dest[1].Tag != "destination" {
+		t.Fatalf("relaylatency children = %#v, want te + destination", dest)
 	}
 }
