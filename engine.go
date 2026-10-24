@@ -625,6 +625,16 @@ func (e *engine) placeCall(ctx context.Context, target string, opts CallOptions)
 // preparation step, independent of the later Answer/Reject), and fires the
 // OnIncomingCall listener. Only the <accept> is deferred to Answer.
 func (e *engine) onOffer(ev *events.CallOffer) {
+	// Offline replay: on reconnect the server re-delivers call stanzas queued
+	// while we were away, marking each <call> with an `offline` attribute.
+	// WA Web never rings for those (offerReceivedWhileOffline: no alert, no
+	// call window), it only logs a missed call. whatsmeow sends no preaccept
+	// for them either, so there is nothing here to answer.
+	if ev.Offline {
+		e.c.log.Info().Str("call_id", ev.CallID).Msg("ignoring offer replayed from the offline queue")
+		return
+	}
+
 	// Source of truth: https://github.com/purpshell/meowcaller/blob/33854919e64bdd4b053054ac9764d8fc63027b57/datasheets/voip-group-invite-accept.md#L28-L40
 	groupSnapshot, isGroup, groupErr := signaling.ParseGroupInviteSnapshot(ev.Data)
 	if groupErr != nil {
@@ -643,19 +653,6 @@ func (e *engine) onOffer(ev *events.CallOffer) {
 	if oag.OptionalString("is_call_ended") == "1" || oag.OptionalString("terminate_reason") != "" {
 		e.c.log.Warn().Str("call_id", ev.CallID).Msg("ignoring already-ended offer; not a live call")
 		return
-	}
-
-	// Offline replay: on reconnect the server re-delivers call stanzas queued
-	// while we were away, including offers minutes old whose terminate is right
-	// behind them in the same backlog. The wrapper's `e` attribute is the
-	// server-computed elapsed seconds (0 on live delivery), so it is immune to
-	// local clock skew. Anything older than the caller's own 90s ring timeout
-	// cannot be answered — ringing it just races the queued terminate.
-	if raw := oag.OptionalString("e"); raw != "" {
-		if elapsed, err := strconv.Atoi(raw); err == nil && elapsed > 90 {
-			e.c.log.Warn().Str("call_id", ev.CallID).Int("elapsed_s", elapsed).Msg("ignoring stale offer replayed from the offline queue")
-			return
-		}
 	}
 
 	// whatsmeow's own call.go already decrypted this offer's callKey before
