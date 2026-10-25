@@ -20,6 +20,9 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
   only the first press of Accept or Decline.
 - `Call.Reject` on a call already answered ends it with `<terminate>`, as WA
   Web's end-call button does, instead of declining a call that was accepted.
+- `NewClient` sets whatsmeow's `ExternalCallSignaling`, so the fork no longer
+  sends a second `<preaccept>` and a second, unfiltered set of relaylatency
+  replies next to the engine's own.
 - Unit tests in `engine_answer_once_test.go`. Relay dialing not yet tried live.
 
 ### engine — calls missed while offline — `implemented`

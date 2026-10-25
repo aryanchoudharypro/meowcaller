@@ -58,6 +58,9 @@ func NewClient(wa *whatsmeow.Client, opts ...Option) *Client {
 			return []types.JID{wa.Store.GetJID(), wa.Store.GetLID()}
 		},
 	}
+	// The engine sends the <preaccept> and relaylatency replies itself;
+	// whatsmeow sending them too put each on the wire twice.
+	wa.ExternalCallSignaling = true
 	c.eng = newEngine(c)
 	c.eng.install()
 	return c
