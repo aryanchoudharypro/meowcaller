@@ -30,7 +30,10 @@ type relayFanout struct {
 
 	mu     sync.Mutex
 	closed bool
-	live   int
+	// rebound is set once Rebind collapses the fanout onto one relay; a
+	// relay that finishes connecting after that is not wanted.
+	rebound bool
+	live    int
 }
 
 // fanoutBacklog bounds merged inbound packets awaiting Recv. At 60ms audio
@@ -211,6 +214,7 @@ func (f *relayFanout) Rebind(name string, replacement *relay.RelayMediaChannel) 
 	if replacement != nil {
 		f.live++
 	}
+	f.rebound = true
 	// Fresh slices: Send and ResendAllocates iterate snapshots taken under mu.
 	f.chans = []*relay.RelayMediaChannel{keep}
 	f.allocs = [][]byte{nil}
@@ -224,6 +228,25 @@ func (f *relayFanout) Rebind(name string, replacement *relay.RelayMediaChannel) 
 		_ = ch.Close()
 	}
 	return nil
+}
+
+// add binds a relay that finished connecting after media started. It reports
+// false when the fanout no longer takes relays (closed, or rebound onto one);
+// the caller then closes ch.
+func (f *relayFanout) add(name string, ch *relay.RelayMediaChannel, allocate []byte) bool {
+	f.mu.Lock()
+	if f.closed || f.rebound {
+		f.mu.Unlock()
+		return false
+	}
+	// Fresh slices: Send and ResendAllocates iterate snapshots taken under mu.
+	f.chans = append(append([]*relay.RelayMediaChannel(nil), f.chans...), ch)
+	f.allocs = append(append([][]byte(nil), f.allocs...), allocate)
+	f.names = append(append([]string(nil), f.names...), name)
+	f.live++
+	f.mu.Unlock()
+	go f.readLoop(ch)
+	return true
 }
 
 // snapshot returns the bound relays' names and allocate payloads, index-aligned.

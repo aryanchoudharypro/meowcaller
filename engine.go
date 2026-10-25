@@ -125,6 +125,11 @@ type engineCall struct {
 	inviteSelfDevice groupCallDevice
 	invitePeerDevice groupCallDevice
 
+	// answered is set by the first Answer. WA Web takes only the first press
+	// of Accept or Decline (one in-flight ref guards both buttons); an
+	// <accept> sent again is answered by the server with a 500 error ack,
+	// which ended the call.
+	answered bool
 	// acceptPending guards sendAccept against sending <accept> twice for the same call.
 	acceptPending bool
 	// acceptSent flips once the <accept> is actually on the wire. Video-state
@@ -813,6 +818,14 @@ func (e *engine) answer(c *Call) error {
 	if m == nil {
 		return fmt.Errorf("meowcaller: unknown call %s", c.id)
 	}
+	e.mu.Lock()
+	again := m.answered
+	m.answered = true
+	e.mu.Unlock()
+	if again {
+		e.c.log.Debug().Str("call_id", c.id).Msg("call already answered; ignoring Answer")
+		return nil
+	}
 	if m.group {
 		// Source of truth: https://github.com/purpshell/meowcaller/blob/676ebee3eca513b5348fab36cae5c560cc791238/datasheets/voip-group-invite-accept.md#L26-L45
 		accept, err := signaling.BuildActiveGroupAccept(c.id, m.creator, e.nextCallNodeID())
@@ -910,11 +923,19 @@ func (e *engine) sendAccept(callID string, to, creator types.JID) {
 	}
 }
 
-// reject declines an inbound call.
+// reject declines an inbound call. Once it was answered there is nothing to
+// decline: the call is ended with a <terminate>, as WA Web's end-call button
+// does for a call that is connecting.
 func (e *engine) reject(c *Call, reason string) error {
 	m := e.lookup(c.id)
 	to, creator := c.peer, c.peer
 	if m != nil {
+		e.mu.Lock()
+		answered := m.answered
+		e.mu.Unlock()
+		if answered {
+			return e.hangup(c)
+		}
 		to, creator = m.from, m.creator
 	}
 	rej := signaling.BuildRejectWithReason(c.id, to, creator, reason)

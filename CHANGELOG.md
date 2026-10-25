@@ -7,6 +7,21 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### engine — answering and declining calls — `implemented`
+
+- The offered relays are dialed at once instead of one after another. Media
+  starts when the preferred relay is up, or 1 s after another relay is up
+  if the preferred one is still connecting, and the others join the fanout
+  as they connect. A relay whose DTLS
+  finished but whose SCTP never did held an answered call on "connecting"
+  for its whole 12 s timeout before the next relay was tried.
+- `Call.Answer` acts only once. Every press used to send another `<accept>`,
+  and the server's 500 error ack to a repeat ended the call. WA Web takes
+  only the first press of Accept or Decline.
+- `Call.Reject` on a call already answered ends it with `<terminate>`, as WA
+  Web's end-call button does, instead of declining a call that was accepted.
+- Unit tests in `engine_answer_once_test.go`. Relay dialing not yet tried live.
+
 ### engine — calls missed while offline — `implemented`
 
 - An offer the server replays from the offline queue (whatsmeow's

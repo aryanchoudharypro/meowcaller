@@ -124,6 +124,10 @@ func (e *engine) maybeStartMedia(callID string) {
 	}()
 }
 
+// primaryGrace is how long media waits for the preferred relay once another
+// relay is already connected.
+const primaryGrace = time.Second
+
 // connectAndAllocateAll opens a relay DataChannel and sends the STUN allocate
 // on every usable relay in the offer, returning them as one fanout. Phones run
 // client relay election shortly after accept and migrate their media to the
@@ -156,26 +160,86 @@ func (e *engine) connectAndAllocateAll(ctx context.Context, rd *relayData, strea
 		}
 	}
 
+	// Dial every relay at once. One relay that never finishes its handshake
+	// (seen live: DTLS up, SCTP never) used to hold the call for its whole
+	// 12 s timeout before the next relay was even tried, so the answered call
+	// sat on "connecting" and the user pressed Answer again and again.
+	type dialed struct {
+		index    int
+		ep       *relayEndpoint
+		ch       *relay.RelayMediaChannel
+		allocate []byte
+		err      error
+	}
+	results := make(chan dialed, len(targets))
+	for i, ep := range targets {
+		go func(i int, ep *relayEndpoint) {
+			ch, allocate, err := e.connectOneRelay(ctx, rd, ep, streamSsrcs, screen)
+			results <- dialed{index: i, ep: ep, ch: ch, allocate: allocate, err: err}
+		}(i, ep)
+	}
+
+	// Media starts once the preferred relay is up. When another relay is up
+	// first, the preferred one gets primaryGrace to catch up, then media
+	// starts without it (seen live: the preferred relay was the one stuck).
+	// The rest join the fanout as they connect.
 	var chans []*relay.RelayMediaChannel
 	var allocs [][]byte
 	var names []string
-	for _, ep := range targets {
-		ch, allocate, err := e.connectOneRelay(ctx, rd, ep, streamSsrcs, screen)
-		if err != nil {
-			// Secondary relays failing is survivable; the primary failing with
-			// no fallback is not.
-			e.c.log.Warn().Err(err).Str("relay_name", ep.relayName).Msg("relay connect failed; continuing without it")
+	pending := len(targets)
+	primaryDone := false
+	var grace <-chan time.Time
+collect:
+	for pending > 0 && (!primaryDone || len(chans) == 0) {
+		var r dialed
+		select {
+		case r = <-results:
+		case <-grace:
+			break collect
+		}
+		pending--
+		if r.index == 0 {
+			primaryDone = true
+		}
+		if r.err != nil {
+			e.c.log.Warn().Err(r.err).Str("relay_name", r.ep.relayName).Msg("relay connect failed; continuing without it")
 			continue
 		}
-		chans = append(chans, ch)
-		allocs = append(allocs, allocate)
-		names = append(names, ep.relayName)
+		if r.index == 0 {
+			chans = append([]*relay.RelayMediaChannel{r.ch}, chans...)
+			allocs = append([][]byte{r.allocate}, allocs...)
+			names = append([]string{r.ep.relayName}, names...)
+		} else {
+			chans = append(chans, r.ch)
+			allocs = append(allocs, r.allocate)
+			names = append(names, r.ep.relayName)
+			if grace == nil {
+				grace = time.After(primaryGrace)
+			}
+		}
 	}
 	if len(chans) == 0 {
 		return nil, fmt.Errorf("no relay reachable (%d offered)", len(targets))
 	}
 	e.c.log.Info().Int("connected", len(chans)).Int("offered", len(targets)).Strs("relays", names).Msg("relay fanout established")
-	return newRelayFanout(chans, allocs, names), nil
+	f := newRelayFanout(chans, allocs, names)
+	if pending > 0 {
+		go func() {
+			for ; pending > 0; pending-- {
+				r := <-results
+				if r.err != nil {
+					e.c.log.Warn().Err(r.err).Str("relay_name", r.ep.relayName).Msg("relay connect failed; continuing without it")
+					continue
+				}
+				if !f.add(r.ep.relayName, r.ch, r.allocate) {
+					_ = r.ch.Close()
+					continue
+				}
+				e.c.log.Info().Str("relay_name", r.ep.relayName).Msg("relay joined the fanout")
+			}
+		}()
+	}
+	return f, nil
 }
 
 // connectOneRelay opens the relay DataChannel and sends the STUN allocate for a
@@ -377,8 +441,9 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 	stopCloseOnEnd := context.AfterFunc(ctx, func() { _ = ch.Close() })
 	defer stopCloseOnEnd()
 	watch := newConnectionWatch(time.Now())
+	_, boundAllocs := ch.snapshot()
 	allocateState := newGroupRelayAllocateStateWithHBHFEC(
-		ch.allocs[0],
+		boundAllocs[0],
 		rd.relayKeyASCII,
 		[2]uint32{hbhFECTXSSRC, hbhFECRXSSRC},
 	)
