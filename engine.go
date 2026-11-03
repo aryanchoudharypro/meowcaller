@@ -1970,6 +1970,9 @@ type relayEndpoint struct {
 	addresses   []relayAddress
 	te2         []byte // the raw 6-byte <te2> address
 	c2rRTTMs    uint32 // server-measured client-to-relay RTT; 0 = absent
+	// plainUDP: the relay block was set up for the native transport (it has
+	// te2 entries with a protocol attribute), so dial over plain UDP.
+	plainUDP bool
 }
 
 type relayData struct {
@@ -2117,7 +2120,28 @@ func parseRelayData(node *waBinary.Node) *relayData {
 		}
 		rd.endpoints = append(rd.endpoints, ep)
 	}
+	// Native-transport relay blocks list each relay twice, once with
+	// protocol="1"; WA Web style blocks carry domain_name instead. Seen live:
+	// on every native-style block DTLS completed and SCTP never did, while a
+	// plain-UDP STUN allocate got Allocate Success.
+	if relayBlockIsNative(node) {
+		for i := range rd.endpoints {
+			rd.endpoints[i].plainUDP = true
+		}
+	}
 	return rd
+}
+
+func relayBlockIsNative(node *waBinary.Node) bool {
+	for _, child := range node.GetChildren() {
+		if child.Tag != "te2" {
+			continue
+		}
+		if _, ok := child.Attrs["protocol"]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // getMediaRelayEndpoint prefers an outbound (non-FNA, auth_token_id≠0) endpoint, else

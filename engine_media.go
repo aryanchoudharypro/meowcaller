@@ -302,6 +302,7 @@ func (e *engine) dialRelay(ctx context.Context, ep *relayEndpoint) (*relay.Relay
 	e.c.diag.Emit("relay", map[string]any{
 		"event": "endpoint", "relay_name": ep.relayName,
 		"ipv4": ep.addresses[0].ipv4, "port": ep.addresses[0].port, "token_id": ep.tokenID,
+		"plain_udp": ep.plainUDP,
 	})
 
 	type result struct {
@@ -310,6 +311,11 @@ func (e *engine) dialRelay(ctx context.Context, ep *relayEndpoint) (*relay.Relay
 	}
 	done := make(chan result, 1)
 	go func() {
+		if ep.plainUDP {
+			ch, err := relay.ConnectRelayUDP(addr, relay.WithLogger(log))
+			done <- result{ch, err}
+			return
+		}
 		ch, err := relay.ConnectRelayMedia(addr, relay.WithLogger(log))
 		done <- result{ch, err}
 	}()
@@ -325,7 +331,11 @@ func (e *engine) dialRelay(ctx context.Context, ep *relayEndpoint) (*relay.Relay
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-	log.Info().Str("relay_name", ep.relayName).Msg("relay DataChannel open")
+	if ch.IsRaw() {
+		log.Info().Str("relay_name", ep.relayName).Msg("relay plain UDP path open (native relay block)")
+	} else {
+		log.Info().Str("relay_name", ep.relayName).Msg("relay DataChannel open")
+	}
 	return ch, nil
 }
 

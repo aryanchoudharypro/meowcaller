@@ -80,13 +80,25 @@ type RelayMediaChannel struct {
 	assoc    *sctp.Association
 	dc       *datachannel.DataChannel
 	log      zerolog.Logger
+
+	// raw is set for a plain-UDP channel (see ConnectRelayUDP): packets go
+	// straight to relayAddr with no DTLS, SCTP or DataChannel around them.
+	raw       bool
+	relayAddr *net.UDPAddr
 }
+
+// IsRaw reports whether this channel sends packets straight over UDP.
+func (c *RelayMediaChannel) IsRaw() bool { return c.raw }
 
 // Close tears down the media stack in reverse order of construction.
 func (c *RelayMediaChannel) Close() error {
 	c.log.Debug().Msg("tearing down relay media channel")
 	var firstErr error
-	for _, closer := range []func() error{c.dc.Close, c.assoc.Close, c.dtlsConn.Close, c.udp.Close} {
+	closers := []func() error{c.udp.Close}
+	if !c.raw {
+		closers = []func() error{c.dc.Close, c.assoc.Close, c.dtlsConn.Close, c.udp.Close}
+	}
+	for _, closer := range closers {
 		if err := closer(); err != nil && firstErr == nil {
 			firstErr = err
 		}
@@ -101,7 +113,13 @@ func (c *RelayMediaChannel) Close() error {
 func (c *RelayMediaChannel) Send(data []byte) (int, error) {
 	// NOT VALIDATED: no vector exists for the live transport; exercised only against a real relay.
 	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/41095d4e6ba4610e054e9ede3af1d5e88a83faee/src/voip/transport.rs#L118-L124
-	n, err := c.dc.Write(data)
+	var n int
+	var err error
+	if c.raw {
+		n, err = c.udp.WriteTo(data, c.relayAddr)
+	} else {
+		n, err = c.dc.Write(data)
+	}
 	if err != nil {
 		c.log.Debug().Err(err).Int("packet_bytes", len(data)).Msg("relay send failed")
 		return n, &CallTransportError{Op: "send", Err: err}
@@ -114,7 +132,13 @@ func (c *RelayMediaChannel) Send(data []byte) (int, error) {
 func (c *RelayMediaChannel) Recv(buf []byte) (int, error) {
 	// NOT VALIDATED: no vector exists for the live transport; exercised only against a real relay.
 	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/41095d4e6ba4610e054e9ede3af1d5e88a83faee/src/voip/transport.rs#L126-L132
-	n, err := c.dc.Read(buf)
+	var n int
+	var err error
+	if c.raw {
+		n, err = c.recvRaw(buf)
+	} else {
+		n, err = c.dc.Read(buf)
+	}
 	if err != nil {
 		c.log.Debug().Err(err).Msg("relay recv failed")
 		return n, &CallTransportError{Op: "recv", Err: err}
@@ -187,4 +211,37 @@ func ConnectRelayMedia(relayAddr *net.UDPAddr, opts ...Option) (*RelayMediaChann
 	lg.Debug().Str("label", DataChannelLabel).Msg("relay datachannel open")
 
 	return &RelayMediaChannel{udp: udp, dtlsConn: dtlsConn, assoc: assoc, dc: dc, log: lg}, nil
+}
+
+// recvRaw reads the next datagram that came from the relay, dropping anything
+// else that reaches the socket.
+func (c *RelayMediaChannel) recvRaw(buf []byte) (int, error) {
+	for {
+		n, from, err := c.udp.ReadFrom(buf)
+		if err != nil {
+			return n, err
+		}
+		if ua, ok := from.(*net.UDPAddr); ok && ua.IP.Equal(c.relayAddr.IP) && ua.Port == c.relayAddr.Port {
+			return n, nil
+		}
+		c.log.Trace().Str("from", from.String()).Int("packet_bytes", n).Msg("dropped datagram from outside the relay")
+	}
+}
+
+// ConnectRelayUDP opens a plain-UDP channel to one relay: STUN, RTP and RTCP
+// go straight over UDP, the way the native apps talk to relays. The server
+// hands out relays like this (te2 entries carrying protocol="1") when it set
+// the call up for the native transport, for example when we log in as the
+// Windows app; on those relays the DTLS handshake completes but SCTP never
+// does. There is no handshake here, so it cannot fail past binding the socket;
+// the relay answering the allocate is the real check.
+func ConnectRelayUDP(relayAddr *net.UDPAddr, opts ...Option) (*RelayMediaChannel, error) {
+	cfg := resolveConfig(opts)
+	lg := cfg.log
+	udp, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+	if err != nil {
+		return nil, &CallTransportError{Op: "connect", Err: fmt.Errorf("bind udp: %w", err)}
+	}
+	lg.Debug().Str("relay_addr", relayAddr.String()).Str("local_addr", udp.LocalAddr().String()).Msg("relay plain udp channel bound")
+	return &RelayMediaChannel{udp: udp, log: lg, raw: true, relayAddr: relayAddr}, nil
 }
