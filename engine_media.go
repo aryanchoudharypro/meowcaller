@@ -1277,6 +1277,11 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 				}
 				log.Debug().Uint32("screen_ssrc", ssender.ssrc).Msg("peer requested a screen keyframe")
 			}
+			if call != nil {
+				if fraction, ok := rtp.ParseReceptionFractionLost(plain, ssrc); ok {
+					call.stats.observePeerLoss(fraction)
+				}
+			}
 			if reportSsrc, ntpSeconds, ntpFraction, ok := rtp.ParseSenderReportTiming(plain); ok {
 				nowMs := uint64(time.Now().UnixMilli())
 				audioReception.ObserveSenderReport(reportSsrc, ntpSeconds, ntpFraction, nowMs)

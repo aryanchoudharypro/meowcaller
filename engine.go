@@ -625,7 +625,35 @@ func (e *engine) placeCall(ctx context.Context, target string, opts CallOptions)
 	}
 	e.c.log.Info().Str("call_id", callID).Bool("video", opts.Video).Msg("offer sent; media starts when the relay endpoint arrives")
 	e.c.diag.Emit("meta", map[string]any{"event": "offer_sent", "call_id": callID, "peer_lid": peerLID.String(), "direction": "out", "video": opts.Video})
+	if CallerRingTimeout > 0 {
+		time.AfterFunc(CallerRingTimeout, func() { e.endUnanswered(call) })
+	}
 	return call, nil
+}
+
+// CallerRingTimeout is how long a call we placed rings before we give up on it
+// when nobody has answered (WhatsApp's caller_timeout, which its server can
+// tune; 60 s is the usual ring time). Zero turns the timer off.
+var CallerRingTimeout = 60 * time.Second
+
+// endUnanswered hangs up a call we placed that nobody picked up, telling the
+// callee's devices it timed out so they stop ringing.
+func (e *engine) endUnanswered(call *Call) {
+	if call == nil || call.State() == CallPhaseEnded || call.isPeerAccepted() {
+		return
+	}
+	m := e.lookup(call.id)
+	if m == nil || m.group {
+		return
+	}
+	reason := "timeout"
+	term := signaling.BuildTerminate(&signaling.TerminateParams{CallID: call.id, To: m.from, CallCreator: m.creator, Reason: &reason})
+	term.Attrs["id"] = e.nextCallNodeID()
+	e.c.log.Info().Str("call_id", call.id).Msg("nobody answered; ending the call as timed out")
+	e.finishCall(call.id, "timeout")
+	if err := e.transmitCallNode(context.Background(), term); err != nil {
+		e.c.log.Warn().Err(err).Str("call_id", call.id).Msg("send timeout terminate failed")
+	}
 }
 
 // onOffer handles an inbound <offer> event: it decrypts the callKey, captures any relay
@@ -661,7 +689,8 @@ func (e *engine) onOffer(ev *events.CallOffer) {
 	// terminate_reason (e.g. accepted_elsewhere). It is not a live call — engaging it
 	// (preaccept/accept) just earns an "accept error 500". Ignore it.
 	oag := ev.Data.AttrGetter()
-	if oag.OptionalString("is_call_ended") == "1" || oag.OptionalString("terminate_reason") != "" {
+	if _, hinted := ev.Data.GetOptionalChildByTag("terminate_hint"); hinted ||
+		oag.OptionalString("is_call_ended") == "1" || oag.OptionalString("terminate_reason") != "" {
 		e.c.log.Warn().Str("call_id", ev.CallID).Msg("ignoring already-ended offer; not a live call")
 		return
 	}
@@ -1268,6 +1297,16 @@ func (e *engine) onReject(ev *events.CallReject) {
 	e.c.diag.Emit("meta", map[string]any{
 		"event": "peer_reject", "call_id": ev.CallID, "from": ev.From.String(), "reason": reason,
 	})
+	// In an outgoing group call one invitee declining or being busy only
+	// speaks for that person; WhatsApp Web logs "handleCallRejectReceived:
+	// skip endCall (group)" and the call goes on for everyone else.
+	if m.direction == CallDirectionOutgoing && m.group {
+		e.c.log.Info().
+			Str("call_id", ev.CallID).
+			Str("from", ev.From.String()).
+			Msg("a group invitee rejected; the group call goes on")
+		return
+	}
 	if m.direction == CallDirectionOutgoing && !m.group && rejectSpeaksForOneDevice(ev.From, reason) {
 		e.c.log.Info().
 			Str("call_id", ev.CallID).

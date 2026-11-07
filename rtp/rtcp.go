@@ -437,3 +437,38 @@ func RtcpRequestsKeyframe(data []byte, localVideoSsrc uint32) bool {
 	}
 	return false
 }
+
+// ParseReceptionFractionLost returns the fraction of mediaSsrc's packets the
+// reporting peer says it lost since its last report, in 1/256ths, from the
+// reception report blocks of a compound RTCP packet (Sender or Receiver
+// Reports). ok=false when no block names mediaSsrc.
+func ParseReceptionFractionLost(data []byte, mediaSsrc uint32) (fraction uint8, ok bool) {
+	for offset := 0; offset+4 <= len(data); {
+		if (data[offset]>>6)&0x03 != 2 {
+			return 0, false
+		}
+		packetLen := (int(binary.BigEndian.Uint16(data[offset+2:offset+4])) + 1) * 4
+		if packetLen < 8 || offset+packetLen > len(data) {
+			return 0, false
+		}
+		packet := data[offset : offset+packetLen]
+		blocks := int(packet[0] & 0x1f)
+		start := 0
+		switch packet[1] {
+		case RtcpPtSr:
+			start = 28
+		case 201:
+			start = 8
+		}
+		if start != 0 {
+			for i := 0; i < blocks && start+24*(i+1) <= len(packet); i++ {
+				block := packet[start+24*i : start+24*(i+1)]
+				if binary.BigEndian.Uint32(block[0:4]) == mediaSsrc {
+					return block[4], true
+				}
+			}
+		}
+		offset += packetLen
+	}
+	return 0, false
+}

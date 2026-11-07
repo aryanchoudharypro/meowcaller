@@ -41,12 +41,15 @@ func TestAudioPlayoutPadsShortFrameToCodecInterval(t *testing.T) {
 		t.Fatalf("write lengths = [%d %d], want [%d %d]", len(sink.frames[0]), len(sink.frames[1]), FrameSamples, FrameSamples)
 	}
 	for i, sample := range sink.frames[1] {
-		want := float32(0)
 		if i < len(short) {
-			want = 0.25
+			if sample != 0.25 {
+				t.Fatalf("padded frame[%d] = %f, want 0.25", i, sample)
+			}
+			continue
 		}
-		if sample != want {
-			t.Fatalf("padded frame[%d] = %f, want %f", i, sample, want)
+		// The rest is the lost packet's hole: concealed audio that fades out.
+		if sample < 0 || sample > 0.25 {
+			t.Fatalf("padded frame[%d] = %f, want a concealed sample between 0 and 0.25", i, sample)
 		}
 	}
 

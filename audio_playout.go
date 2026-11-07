@@ -120,5 +120,28 @@ func alignAudioFrame(frame []float32, samples int) []float32 {
 	}
 	aligned := make([]float32, samples)
 	copy(aligned, frame)
+	if samples > len(frame) {
+		concealLostAudio(aligned[len(frame):], frame)
+	}
 	return aligned
+}
+
+// concealMaxSamples is how long a gap is bridged with repeated audio before it
+// falls silent (40 ms at 16 kHz), so a long loss does not turn into a buzz.
+const concealMaxSamples = 2 * SampleRate / 50
+
+// concealLostAudio fills the hole a lost packet left after frame by repeating
+// frame's last 10 ms with a falling volume, the way a decoder's packet-loss
+// concealment bridges a short loss; past concealMaxSamples it stays silent.
+func concealLostAudio(hole, frame []float32) {
+	period := SampleRate / 100
+	if len(frame) < period {
+		return
+	}
+	tail := frame[len(frame)-period:]
+	n := min(len(hole), concealMaxSamples)
+	for i := 0; i < n; i++ {
+		fade := 1 - float32(i)/float32(n)
+		hole[i] = tail[i%period] * fade * 0.8
+	}
 }

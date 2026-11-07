@@ -36,6 +36,11 @@ type MediaStats struct {
 	// AudioFramesSent is outbound audio frames sent to the relay (silence
 	// included).
 	AudioFramesSent uint32
+	// PeerReportedLossPercent is how much of our outbound audio the peer's
+	// RTCP reports say never arrived (smoothed, 0-100). It is what a sender
+	// feeds its encoder's packet-loss setting, the way WhatsApp's own stack
+	// does.
+	PeerReportedLossPercent uint32
 }
 
 // AudioSilenceReason is the most specific explanation the counters support
@@ -68,6 +73,15 @@ type AudioHealth struct {
 type mediaStatsCounters struct {
 	rtpReceived, payloadUnexpected, unprotectFailed, framesDecoded, framesSent atomic.Uint32
 	framesConcealed, offPointDropped, inactiveOrSID, standardOpus              atomic.Uint32
+	peerLossPercent                                                            atomic.Uint32
+}
+
+// observePeerLoss folds one peer-reported fraction lost (1/256ths of our
+// packets) into the smoothed loss percentage the sender adapts to.
+func (s *mediaStatsCounters) observePeerLoss(fraction uint8) {
+	now := (uint32(fraction)*100 + 255) / 256
+	old := s.peerLossPercent.Load()
+	s.peerLossPercent.Store((old + now + 1) / 2)
 }
 
 func (s *mediaStatsCounters) snapshot() MediaStats {
@@ -82,6 +96,7 @@ func (s *mediaStatsCounters) snapshot() MediaStats {
 		MlowInactiveOrSID:        s.inactiveOrSID.Load(),
 		StandardOpusFrames:       s.standardOpus.Load(),
 		AudioFramesSent:          s.framesSent.Load(),
+		PeerReportedLossPercent:  s.peerLossPercent.Load(),
 	}
 }
 

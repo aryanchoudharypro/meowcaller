@@ -7,6 +7,14 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### engine — call robustness against WhatsApp's stack — `implemented`
+
+- Peer RTCP reception reports are parsed; `MediaStats.PeerReportedLossPercent` is the smoothed share of our audio the peer lost, for a sender to feed its encoder.
+- A hole left by a lost packet is bridged with faded repeated audio instead of silence.
+- One invitee rejecting an outgoing group call no longer ends it for everyone.
+- An unanswered outgoing 1:1 call is ended as `timeout` after `CallerRingTimeout` (60 s).
+- An offer carrying `terminate_hint` is a notice of an ended call and no longer rings.
+
 ### engine — answering and declining calls — `implemented`
 
 - The offered relays are dialed at once instead of one after another. Media
