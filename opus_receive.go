@@ -2,8 +2,9 @@ package meowcaller
 
 import (
 	"fmt"
+	"runtime"
 
-	"github.com/pion/opus"
+	opus "github.com/kazzmir/opus-go/opus"
 )
 
 // opusMaxPacketSamples is the most audio one Opus packet can carry at 16 kHz
@@ -17,27 +18,73 @@ const opusMaxPacketSamples = opusMaxPacketDurationUs / 1000 * SampleRate / 1000
 var OpusSilencePacket = []byte{0x58}
 
 // standardOpusDecoder decodes RFC 6716 Opus to 16 kHz mono, for a peer outside
-// the MLow rollout: the payload type carries either codec.
+// the MLow rollout: the payload type carries either codec. It is libopus (via
+// a cgo-free port), because only libopus recovers a lost packet from the next
+// one's in-band FEC and conceals longer losses the way WhatsApp's own decoder
+// does.
 type standardOpusDecoder struct {
-	dec opus.Decoder
+	dec *opus.Decoder
 	buf []float32
+	// lastEnd is the RTP timestamp just after the last packet decoded.
+	lastEnd uint32
+	hasLast bool
 }
 
 func newStandardOpusDecoder() (*standardOpusDecoder, error) {
-	dec, err := opus.NewDecoderWithOutput(SampleRate, 1)
+	dec, err := opus.NewDecoder(SampleRate, 1)
 	if err != nil {
 		return nil, fmt.Errorf("meowcaller: create Opus decoder: %w", err)
 	}
-	return &standardOpusDecoder{dec: dec, buf: make([]float32, opusMaxPacketSamples)}, nil
+	d := &standardOpusDecoder{dec: dec, buf: make([]float32, opusMaxPacketSamples)}
+	runtime.SetFinalizer(d, func(d *standardOpusDecoder) { _ = d.dec.Close() })
+	return d, nil
 }
+
+// maxConcealedFrames bounds how many lost packets are filled in front of a
+// packet that arrives after a gap.
+const maxConcealedFrames = 3
 
 // decode returns the packet's audio, or ok=false when it would not decode.
 func (d *standardOpusDecoder) decode(payload []byte) (pcm []float32, ok bool) {
-	n, err := d.dec.DecodeToFloat32(payload, d.buf)
-	if err != nil || n <= 0 {
-		return nil, false
+	pcm, _, ok = d.decodeAt(payload, 0)
+	return pcm, ok
+}
+
+// decodeAt decodes the packet that starts at RTP timestamp ts. When packets
+// went missing just before it, the audio returned starts earlier, at
+// ts-lead, and begins with what libopus recovers for them: the packet's own
+// in-band FEC for one lost packet, concealment for up to maxConcealedFrames.
+func (d *standardOpusDecoder) decodeAt(payload []byte, ts uint32) (pcm []float32, lead uint32, ok bool) {
+	samples, valid := opusPacketSamples(payload, SampleRate)
+	frame := int(samples)
+	if !valid || frame <= 0 || frame > len(d.buf) {
+		return nil, 0, false
 	}
-	return append([]float32(nil), d.buf[:n]...), true
+	var out []float32
+	if d.hasLast {
+		if gap := int32(ts - d.lastEnd); gap > 0 && int(gap) <= maxConcealedFrames*frame {
+			lost := (int(gap) + frame - 1) / frame
+			for i := 0; i < lost; i++ {
+				useFEC := i == lost-1
+				source := []byte(nil)
+				if useFEC {
+					source = payload
+				}
+				n, err := d.dec.DecodeF32(source, d.buf, frame, useFEC)
+				if err != nil || n <= 0 {
+					break
+				}
+				out = append(out, d.buf[:n]...)
+			}
+			lead = uint32(len(out))
+		}
+	}
+	n, err := d.dec.DecodeF32(payload, d.buf, frame, false)
+	if err != nil || n <= 0 {
+		return nil, 0, false
+	}
+	d.lastEnd, d.hasLast = ts+uint32(n), true
+	return append(out, d.buf[:n]...), lead, true
 }
 
 // standardOpusPayload is what a call on standard Opus sends for one frame slot:

@@ -29,6 +29,8 @@ type Call struct {
 	peerAccepted   bool
 	acceptNotified bool
 	onMuteState    func(muted bool)
+	onInterrupt    func(interrupted bool)
+	onBatteryLow   func()
 	onMuteRequest  func(by types.JID)
 	muted          bool
 	muteMu         sync.Mutex
@@ -965,6 +967,28 @@ func (c *Call) OnMuteState(fn func(muted bool)) {
 	c.mu.Lock()
 	c.onMuteState = fn
 	c.mu.Unlock()
+}
+
+// OnPeerInterruption registers a callback fired when the other side's audio is
+// taken over by something else (a phone call) and when it is given back. WhatsApp
+// mutes the call and pauses video meanwhile; the media here simply goes quiet.
+func (c *Call) OnPeerInterruption(fn func(interrupted bool)) {
+	c.mu.Lock()
+	c.onInterrupt = fn
+	c.mu.Unlock()
+}
+
+// OnPeerBatteryLow registers a callback fired when the peer says its battery is low.
+func (c *Call) OnPeerBatteryLow(fn func()) {
+	c.mu.Lock()
+	c.onBatteryLow = fn
+	c.mu.Unlock()
+}
+
+func (c *Call) interruptFns() (func(bool), func()) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.onInterrupt, c.onBatteryLow
 }
 
 // onMuteStateFn returns the Call's remote mute-state callback under its lock.

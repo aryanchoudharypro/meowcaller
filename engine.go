@@ -1598,6 +1598,25 @@ func (e *engine) onCallRaw(callNode *waBinary.Node) bool {
 			Bool("muted", muted).
 			Msg("mute_v2 observed")
 		return false
+	case "interruption", "flowcontrol", "peer_state":
+		// Source of truth: WhatsApp's VoIP wasm serialize_interruption / serialize_flowcontrol /
+		// serialize_peer_state, acknowledged the way WA Web acks its offer_notice:
+		// <ack class="call" type="<child tag>">.
+		if ack, ok := signaling.BuildCallControlAck(callNode, kids[0].Tag); ok {
+			if err := e.transmitCallNode(context.Background(), ack); err != nil {
+				e.c.log.Warn().Err(err).Str("action", kids[0].Tag).Msg("send call control ack failed")
+			}
+		}
+		if kids[0].Tag == "interruption" {
+			ig := kids[0].AttrGetter()
+			e.onPeerInterruption(ig.OptionalString("call-id"), ig.OptionalString("state") != "end")
+		}
+		return true
+	case "notify":
+		if kids[0].AttrGetter().OptionalString("batterystate") == "1" {
+			e.onPeerBatteryLow(callNode.GetChildren()[0].AttrGetter().OptionalString("call-id"), callNode)
+		}
+		return false
 	case "video":
 		// Acknowledge the <video> stanza with type="video" — the mid-call video-upgrade
 		// (state=11) acceptance signal. whatsmeow's generic typeless ack does not satisfy the
@@ -2209,4 +2228,39 @@ func getMediaRelayEndpoint(rd *relayData, inbound bool) *relayEndpoint {
 		return &rd.endpoints[0]
 	}
 	return nil
+}
+
+// onPeerInterruption tells the call's listener that the peer's audio was taken
+// (interrupted) or given back, from an <interruption state="begin|end"> stanza.
+func (e *engine) onPeerInterruption(callID string, interrupted bool) {
+	e.mu.Lock()
+	m := e.calls[callID]
+	e.mu.Unlock()
+	e.c.log.Info().Str("call_id", callID).Bool("interrupted", interrupted).Msg("peer interruption")
+	if m == nil || m.call == nil {
+		return
+	}
+	if fn, _ := m.call.interruptFns(); fn != nil {
+		fn(interrupted)
+	}
+}
+
+// onPeerBatteryLow tells the call's listener that the peer's battery is low,
+// from a <notify batterystate="1"> stanza; the call id comes from the stanza's
+// own call-id or, when it has none, the only call in progress.
+func (e *engine) onPeerBatteryLow(callID string, callNode *waBinary.Node) {
+	e.mu.Lock()
+	m := e.calls[callID]
+	if m == nil && len(e.calls) == 1 {
+		for _, only := range e.calls {
+			m = only
+		}
+	}
+	e.mu.Unlock()
+	if m == nil || m.call == nil {
+		return
+	}
+	if _, fn := m.call.interruptFns(); fn != nil {
+		fn()
+	}
 }

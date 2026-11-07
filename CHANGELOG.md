@@ -13,6 +13,8 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 - A hole left by a lost packet is bridged with faded repeated audio instead of silence.
 - One invitee rejecting an outgoing group call no longer ends it for everyone.
 - An unanswered outgoing 1:1 call is ended as `timeout` after `CallerRingTimeout` (60 s).
+- Standard Opus audio is decoded with libopus (cgo-free port): a lost packet is recovered from the next packet's in-band FEC, longer losses are concealed.
+- `interruption`, `flowcontrol` and `peer_state` call stanzas are acknowledged; `OnPeerInterruption` and `OnPeerBatteryLow` report the peer being on a phone call or low on battery.
 - An offer carrying `terminate_hint` is a notice of an ended call and no longer rings.
 
 ### engine — answering and declining calls — `implemented`

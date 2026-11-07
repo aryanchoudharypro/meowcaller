@@ -30,3 +30,21 @@ func TestObservePeerLossSmooths(t *testing.T) {
 		t.Fatalf("second report gave %d, want 15", got)
 	}
 }
+
+func TestStandardOpusDecoderFillsLostPacket(t *testing.T) {
+	dec, err := newStandardOpusDecoder()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 60 ms SILK wideband packets as libopus makes them: a TOC byte and a body.
+	packet := []byte{0x58, 0x01, 0x02, 0x03, 0x04}
+	first, lead, ok := dec.decodeAt(packet, 1000)
+	if !ok || lead != 0 || len(first) != 960 {
+		t.Fatalf("first packet: ok=%v lead=%d len=%d", ok, lead, len(first))
+	}
+	// The next packet arrives one whole packet late: one packet was lost.
+	second, lead, ok := dec.decodeAt(packet, 1000+2*960)
+	if !ok || lead != 960 || len(second) != 2*960 {
+		t.Fatalf("after loss: ok=%v lead=%d len=%d, want a recovered packet in front", ok, lead, len(second))
+	}
+}

@@ -977,7 +977,8 @@ func (r *participantReceiveRegistry) DecodeAudio(packet []byte) (decodedParticip
 			}
 		}
 		if receiver.opusDecoder != nil {
-			if pcm, ok := receiver.opusDecoder.decode(payload); ok {
+			if pcm, lead, ok := receiver.opusDecoder.decodeAt(payload, authenticatedHeader.Timestamp); ok {
+				decoded.Timestamp -= lead
 				decoded.PCM = pcm
 				decoded.Report = mlow.FrameReport{Decoded: 1}
 				return decoded, true
