@@ -298,6 +298,7 @@ func (e *engine) applyGroupUpdate(update groupCallUpdate) (groupCallUpdate, grou
 		call.pruneScreenShares(stored)
 	}
 	e.maybeStartMedia(update.CallID)
+	e.retryGroupAccept(update.CallID, stored)
 	return cloneGroupCallUpdate(stored), groupUpdateApplied
 }
 

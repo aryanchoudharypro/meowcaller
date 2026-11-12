@@ -9,6 +9,7 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ### engine — call robustness against WhatsApp's stack — `implemented`
 
+- A ringing 1:1 call that the caller turns into a group call (Add participant) no longer stays unanswered after Accept. Like WA Web, the group `<accept>` is sent again to `<call-id>@call` when a committed roster still lists us as not connected after we answered (at most 3 times per call).
 - Peer RTCP reception reports are parsed; `MediaStats.PeerReportedLossPercent` is the smoothed share of our audio the peer lost, for a sender to feed its encoder.
 - A hole left by a lost packet is bridged with faded repeated audio instead of silence.
 - One invitee rejecting an outgoing group call no longer ends it for everyone.

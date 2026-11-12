@@ -130,6 +130,9 @@ type engineCall struct {
 	// <accept> sent again is answered by the server with a 500 error ack,
 	// which ended the call.
 	answered bool
+	// acceptRetries counts the <accept>s sent again because a group roster
+	// still did not list us as connected after we answered.
+	acceptRetries int
 	// acceptPending guards sendAccept against sending <accept> twice for the same call.
 	acceptPending bool
 	// acceptSent flips once the <accept> is actually on the wire. Video-state
@@ -856,13 +859,11 @@ func (e *engine) answer(c *Call) error {
 		return nil
 	}
 	if m.group {
-		// Source of truth: https://github.com/purpshell/meowcaller/blob/676ebee3eca513b5348fab36cae5c560cc791238/datasheets/voip-group-invite-accept.md#L26-L45
-		accept, err := signaling.BuildActiveGroupAccept(c.id, m.creator, e.nextCallNodeID())
-		if err != nil {
+		e.mu.Lock()
+		creator := m.creator
+		e.mu.Unlock()
+		if err := e.sendGroupAccept(c.id, creator); err != nil {
 			return err
-		}
-		if err = e.transmitCallNode(context.Background(), accept); err != nil {
-			return fmt.Errorf("meowcaller: send group accept: %w", err)
 		}
 		c.setPhase(CallPhaseConnecting)
 		e.maybeStartMedia(c.id)
@@ -883,6 +884,19 @@ func (e *engine) answer(c *Call) error {
 		e.c.log.Warn().Err(err).Str("call_id", c.id).Msg("send own mute_v2 failed")
 	}
 	e.sendAccept(c.id, to, creator)
+	return nil
+}
+
+// sendGroupAccept sends the immediate acceptance of an active-call invite to the call.
+func (e *engine) sendGroupAccept(callID string, creator types.JID) error {
+	// Source of truth: https://github.com/purpshell/meowcaller/blob/676ebee3eca513b5348fab36cae5c560cc791238/datasheets/voip-group-invite-accept.md#L26-L45
+	accept, err := signaling.BuildActiveGroupAccept(callID, creator, e.nextCallNodeID())
+	if err != nil {
+		return err
+	}
+	if err = e.transmitCallNode(context.Background(), accept); err != nil {
+		return fmt.Errorf("meowcaller: send group accept: %w", err)
+	}
 	return nil
 }
 
