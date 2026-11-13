@@ -167,6 +167,7 @@ type MediaPipeline struct {
 	sendRoc      srtp.RocTracker
 	recvMu       sync.Mutex
 	recvRoc      srtp.RecvRocTracker
+	auxRoc       map[uint32]*srtp.RecvRocTracker
 	packetsSent  atomic.Uint32
 	octetsSent   atomic.Uint32
 	rtpTimestamp atomic.Uint32
@@ -240,6 +241,7 @@ func (p *MediaPipeline) installRecvKeys(recvKeys srtp.E2eSrtpKeys) {
 	p.recvMu.Lock()
 	p.recvKeys = recvKeys
 	p.recvRoc = srtp.RecvRocTracker{}
+	p.auxRoc = nil
 	p.recvMu.Unlock()
 }
 
@@ -317,6 +319,54 @@ func (p *MediaPipeline) ProtectRTP(header *rtp.RtpHeader, payload []byte) ([]byt
 	p.octetsSent.Add(uint32(len(payload)))
 	p.rtpTimestamp.Store(header.Timestamp)
 	return out, nil
+}
+
+// maxAuxiliaryStreams bounds the per-SSRC rollover state kept for a peer's auxiliary streams.
+const maxAuxiliaryStreams = 8
+
+// UnprotectAuxiliary authenticates and decrypts one of the peer's packets that is not on this
+// pipeline's own stream: its video FEC or retransmission streams. Same keys and tag as the
+// media, but each SSRC keeps its own rollover state.
+func (p *MediaPipeline) UnprotectAuxiliary(packet []byte) (rtp.RtpHeader, []byte, bool) {
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/792923bd62f224078004ea078d640418fe278c00/wacore/src/voip/session.rs#L634-L644
+	if len(packet) < 12+p.warpMITagLen {
+		return rtp.RtpHeader{}, nil, false
+	}
+	withoutTag := packet[:len(packet)-p.warpMITagLen]
+	header, ok := rtp.ParseRtpHeader(withoutTag)
+	if !ok {
+		return rtp.RtpHeader{}, nil, false
+	}
+	headerLen, ok := rtp.RtpHeaderByteLength(withoutTag)
+	if !ok || len(withoutTag) <= headerLen {
+		return rtp.RtpHeader{}, nil, false
+	}
+	p.recvMu.Lock()
+	defer p.recvMu.Unlock()
+	tracker := p.auxRoc[header.Ssrc]
+	if tracker == nil {
+		tracker = &srtp.RecvRocTracker{}
+	}
+	roc := tracker.EstimateRoc(header.SequenceNumber)
+	tag := packet[len(withoutTag):]
+	if !srtp.VerifyWarpMITag(p.recvKeys.AuthKey[:], withoutTag, roc, p.warpMITagLen, tag, p.log) {
+		p.log.Debug().Uint32("ssrc", header.Ssrc).Uint16("seq", header.SequenceNumber).Msg("unprotect auxiliary: WARP MI authentication failed")
+		return rtp.RtpHeader{}, nil, false
+	}
+	plain, err := srtp.CryptPayload(&p.recvKeys, header.Ssrc, header.SequenceNumber, roc, withoutTag[headerLen:])
+	if err != nil {
+		p.log.Debug().Err(err).Uint32("ssrc", header.Ssrc).Uint16("seq", header.SequenceNumber).Msg("unprotect auxiliary: SRTP decrypt failed")
+		return rtp.RtpHeader{}, nil, false
+	}
+	tracker.CommitRoc(roc, header.SequenceNumber)
+	if p.auxRoc == nil {
+		p.auxRoc = make(map[uint32]*srtp.RecvRocTracker, 2)
+	}
+	if _, known := p.auxRoc[header.Ssrc]; !known && len(p.auxRoc) >= maxAuxiliaryStreams {
+		clear(p.auxRoc)
+	}
+	p.auxRoc[header.Ssrc] = tracker
+	return header, plain, true
 }
 
 // SenderStats snapshots the counters used by an RTCP Sender Report.

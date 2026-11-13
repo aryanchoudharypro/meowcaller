@@ -4,6 +4,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/purpshell/meowcaller/rtp"
 )
 
 // MediaStats counts what happened to a call's media, for telling a silent
@@ -41,6 +43,26 @@ type MediaStats struct {
 	// feeds its encoder's packet-loss setting, the way WhatsApp's own stack
 	// does.
 	PeerReportedLossPercent uint32
+	// CarriedAudioFrames is audio packets that arrived inside the peer's video
+	// packets, which WhatsApp does in a video call, instead of on their own.
+	CarriedAudioFrames uint32
+	// VideoRepairsReceived is repair packets the peer's video FEC stream delivered.
+	VideoRepairsReceived uint32
+	// VideoPacketsRecovered is lost video packets rebuilt from those repair packets.
+	VideoPacketsRecovered uint32
+	// VideoGapsSkipped is video gaps given up on after the hold ran out; each costs
+	// the picture a keyframe request.
+	VideoGapsSkipped uint32
+	// VideoPacketsSkipped is the video packets in those gaps.
+	VideoPacketsSkipped uint32
+	// VideoPacketsLate is video packets that arrived after reassembly moved on.
+	VideoPacketsLate uint32
+	// VideoParityMismatched is repair packets whose parity did not match a group that
+	// arrived whole; while these dominate, rebuilding cannot work.
+	VideoParityMismatched uint32
+	// VideoRecoveredRejected is rebuilt packets dropped for not looking like the
+	// video packet they replace.
+	VideoRecoveredRejected uint32
 }
 
 // AudioSilenceReason is the most specific explanation the counters support
@@ -74,6 +96,20 @@ type mediaStatsCounters struct {
 	rtpReceived, payloadUnexpected, unprotectFailed, framesDecoded, framesSent atomic.Uint32
 	framesConcealed, offPointDropped, inactiveOrSID, standardOpus              atomic.Uint32
 	peerLossPercent                                                            atomic.Uint32
+	carriedAudio, videoRepairs, videoRecovered, videoGapsSkipped               atomic.Uint32
+	videoPacketsSkipped, videoPacketsLate, videoParityMismatched               atomic.Uint32
+	videoRecoveredRejected                                                     atomic.Uint32
+}
+
+// foldVideoFec adds what inbound video FEC did since the last call.
+func (s *mediaStatsCounters) foldVideoFec(stats rtp.InboundFecStats) {
+	s.videoRepairs.Add(stats.RepairsReceived)
+	s.videoRecovered.Add(stats.PacketsRecovered)
+	s.videoGapsSkipped.Add(stats.GapsSkipped)
+	s.videoPacketsSkipped.Add(stats.PacketsSkipped)
+	s.videoPacketsLate.Add(stats.PacketsLate)
+	s.videoParityMismatched.Add(stats.ParityMismatched)
+	s.videoRecoveredRejected.Add(stats.RecoveredRejected)
 }
 
 // observePeerLoss folds one peer-reported fraction lost (1/256ths of our
@@ -97,6 +133,14 @@ func (s *mediaStatsCounters) snapshot() MediaStats {
 		StandardOpusFrames:       s.standardOpus.Load(),
 		AudioFramesSent:          s.framesSent.Load(),
 		PeerReportedLossPercent:  s.peerLossPercent.Load(),
+		CarriedAudioFrames:       s.carriedAudio.Load(),
+		VideoRepairsReceived:     s.videoRepairs.Load(),
+		VideoPacketsRecovered:    s.videoRecovered.Load(),
+		VideoGapsSkipped:         s.videoGapsSkipped.Load(),
+		VideoPacketsSkipped:      s.videoPacketsSkipped.Load(),
+		VideoPacketsLate:         s.videoPacketsLate.Load(),
+		VideoParityMismatched:    s.videoParityMismatched.Load(),
+		VideoRecoveredRejected:   s.videoRecoveredRejected.Load(),
 	}
 }
 

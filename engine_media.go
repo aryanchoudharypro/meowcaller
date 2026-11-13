@@ -36,6 +36,14 @@ const (
 type videoReceiveState struct {
 	assembler   rtp.H264AccessUnitAssembler
 	orientation int
+	// fec holds the camera packets behind a sequence gap, briefly, so a late packet or one
+	// rebuilt from the peer's repair stream can fill it. Only a one-to-one call uses it.
+	fec rtp.InboundFec
+	// ssrc is the camera stream fec is following; a new one starts it afresh.
+	ssrc uint32
+	// lastMedia names the participant the held packets belong to, for packets released by the
+	// timer when no packet is in hand.
+	lastMedia unprotectedParticipantMedia
 }
 
 // screenStreamKey identifies one screen-share layer of one participant; the layers
@@ -1190,6 +1198,239 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 	buf := make([]byte, 1500)
 	rtpDedup := newRtpReplayFilter()
 	var rtpIn, rtpSeen, unprotectFail, rtpInspect, vidIn, appDataIn, appDataUnprotectFail, videoUnprotectFail, videoFrameIn, videoSinkMissing, rtcpIn, rtcpAuthFail, groupForwardingInvalid, stunInspect, otherInspect uint64
+	mediaStart := time.Now()
+	monoMs := func() uint64 { return uint64(time.Since(mediaStart).Milliseconds()) }
+	audioLatest := make(map[uint32]uint32)
+
+	// playDecodedAudio takes one decoded audio packet, from its own RTP packet or carried inside
+	// a video one, into the call's counters and its playout.
+	playDecodedAudio := func(vh rtp.RtpHeader, audio decodedParticipantAudio) {
+		if latest, seen := audioLatest[audio.SSRC]; !seen || int32(vh.Timestamp-latest) > 0 {
+			audioLatest[audio.SSRC] = vh.Timestamp
+		}
+		if call != nil {
+			call.stats.rtpReceived.Add(1)
+			call.stats.framesConcealed.Add(audio.Report.Concealed)
+			call.stats.offPointDropped.Add(audio.Report.OffPoint)
+			call.stats.inactiveOrSID.Add(audio.Report.InactiveOrSID)
+			if audio.StandardOpus {
+				call.stats.standardOpus.Add(1)
+			}
+			if audio.StandardOpusSettled && !groupMode.Load() {
+				call.peerSendsOpus.Store(true)
+			}
+			// A SID is the peer TELLING us it is silent, and the decoder
+			// handled it: a muted peer is a healthy stream. Counted as
+			// production so the silence alarm does not fire through a long
+			// mute - the failures the alarm exists for report off-point or
+			// concealment, never this.
+			// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/e0225b3a/wacore/src/voip/engine.rs#L3087-L3124
+			if audio.Report.Decoded > 0 {
+				call.stats.framesDecoded.Add(1)
+			}
+			if audio.Report.Decoded > 0 || audio.Report.InactiveOrSID > 0 {
+				call.health.onAudioProduced()
+			}
+		}
+		audioReception.Observe(audio.SSRC, vh.SequenceNumber, audio.Timestamp, uint64(time.Now().UnixMilli()), SampleRate)
+		e.c.diag.Emit("rtp", map[string]any{
+			"event": "in", "ssrc": audio.SSRC, "seq": vh.SequenceNumber,
+			"ts": audio.Timestamp, "pt": vh.PayloadType, "marker": vh.Marker,
+			"participant_id": audio.ParticipantID, "pid": audio.PID, "has_pid": audio.HasPID,
+		})
+		e.c.diag.Emit("srtp", map[string]any{
+			"event": "frame_authenticated", "ssrc": audio.SSRC, "seq": vh.SequenceNumber,
+			"participant_id": audio.ParticipantID, "pid": audio.PID, "has_pid": audio.HasPID,
+		})
+		e.c.diag.Emit("media_in", map[string]any{
+			"seq": vh.SequenceNumber, "samples": len(audio.PCM),
+			"pcm_rms": rmsFloat32(audio.PCM), "participant_id": audio.ParticipantID,
+		})
+		mixedMode := groupMixing.Load()
+		playoutLocked := false
+		if !mixedMode {
+			audioPlayoutMu.Lock()
+			playoutLocked = true
+			mixedMode = groupMixing.Load()
+		}
+		if mixedMode {
+			audioMixer.Add(audio.ParticipantID, audio.PCM)
+		} else {
+			_, sink := callPlayerSink(call)
+			playoutStarted, playoutErr := audioPlayout.Push(audio.Timestamp, audio.PCM, sink)
+			if playoutErr != nil {
+				log.Warn().Err(playoutErr).Msg("failed to write timestamp-aligned WhatsApp audio")
+			}
+			if playoutStarted {
+				log.Info().Int("prefill_ms", audioPlayoutPrefillSamples*1000/SampleRate).Msg("started timestamp-aligned inbound audio playout")
+			}
+		}
+		if playoutLocked {
+			audioPlayoutMu.Unlock()
+		}
+		if rtpIn++; rtpIn == 1 {
+			log.Info().Msg("first RTP decoded from relay, inbound audio flowing")
+			e.c.diag.Emit("meta", map[string]any{"event": "first_rtp_in", "call_id": callID})
+			markReady()
+		}
+	}
+
+	// deliverCarriedAudio plays the audio packet a video or repair packet carried. The packet
+	// that carried it authenticated, and a copy that already arrived another way is not played twice.
+	deliverCarriedAudio := func(packet []byte) {
+		if packet == nil {
+			return
+		}
+		header, ok := rtp.ParseRtpHeader(packet)
+		if !ok || rtpDedup.Duplicate(header.Ssrc, header.SequenceNumber) {
+			return
+		}
+		audio, ok := audioReceivers.DecodeCarriedAudio(packet)
+		if !ok {
+			return
+		}
+		if call != nil {
+			call.health.onRTP(time.Now())
+			call.stats.carriedAudio.Add(1)
+		}
+		playDecodedAudio(header, audio)
+	}
+
+	// deliverRecoveredAudio plays audio that rode a video packet only rebuilt now, unless the
+	// stream has moved past it: the decoder and playout cannot take a packet older than one
+	// already played.
+	deliverRecoveredAudio := func(packet []byte) {
+		header, ok := rtp.ParseRtpHeader(packet)
+		if !ok {
+			return
+		}
+		if latest, seen := audioLatest[header.Ssrc]; seen && int32(header.Timestamp-latest) <= 0 {
+			return
+		}
+		deliverCarriedAudio(packet)
+	}
+
+	// playRecoveredAudio plays the audio of rebuilt packets, oldest first, with the audio of the
+	// packet that just arrived in its place among them.
+	playRecoveredAudio := func(recovered [][]byte, carried []byte) {
+		for _, audio := range recovered {
+			if carried != nil {
+				current, currentOK := rtp.ParseRtpHeader(carried)
+				rebuilt, rebuiltOK := rtp.ParseRtpHeader(audio)
+				if currentOK && rebuiltOK && current.Ssrc == rebuilt.Ssrc && int32(current.Timestamp-rebuilt.Timestamp) <= 0 {
+					deliverCarriedAudio(carried)
+					carried = nil
+				}
+			}
+			deliverRecoveredAudio(audio)
+		}
+		deliverCarriedAudio(carried)
+	}
+
+	// pushVideoPayload feeds one in-order video payload to its stream's assembler and delivers
+	// the access unit it completes.
+	pushVideoPayload := func(media unprotectedParticipantMedia, vh rtp.RtpHeader, videoState *videoReceiveState, payload []byte) {
+		frame, complete, recoveryNeeded := videoState.assembler.Push(
+			vh.SequenceNumber,
+			vh.Marker,
+			payload,
+		)
+		if recoveryNeeded && shouldSendVideoPLI(lastVideoPLI, vh.Ssrc, time.Now()) {
+			packet, feedbackErr := videoRtcp.pictureLossIndication(vh.Ssrc)
+			if feedbackErr == nil {
+				_, feedbackErr = ch.Send(packet)
+			}
+			if feedbackErr != nil {
+				log.Warn().Err(feedbackErr).Uint32("ssrc", vh.Ssrc).Msg("failed to request video keyframe after RTP loss")
+			}
+		}
+		if complete {
+			if videoWireFrame < videoWireFrameLimit {
+				e.c.diag.Emit("video_wire", map[string]any{
+					"event": "access_unit", "direction": "in", "call_id": callID,
+					"frame": videoWireFrame, "ssrc": vh.Ssrc, "rtp_ts": vh.Timestamp,
+					"idr": rtp.AUHasIDR(frame), "bytes": len(frame),
+				})
+			}
+			videoWireFrame++
+			e.c.diag.Emit("video", map[string]any{"event": "frame", "ssrc": vh.Ssrc, "bytes": len(frame), "screen_share": media.ScreenShare})
+			if media.ScreenShare {
+				// A dual-stream screen share is not the camera: it goes only to the
+				// screen-share callback, never to the camera video sink.
+				delivered := call != nil && call.dispatchParticipantScreenFrame(ParticipantVideoFrame{
+					ParticipantID: media.ParticipantID,
+					Sender:        media.UserJID,
+					Device:        media.DeviceJID,
+					PID:           media.PID,
+					HasPID:        media.HasPID,
+					SSRC:          vh.Ssrc,
+					Orientation:   videoState.orientation,
+					AccessUnit:    frame,
+					ScreenShare:   true,
+				})
+				if screenFrameIn++; screenFrameIn == 1 {
+					log.Info().Uint32("ssrc", vh.Ssrc).Bool("delivered", delivered).Msg("first dual-stream screen-share frame received (NOT VALIDATED)")
+					e.c.diag.Emit("meta", map[string]any{"event": "first_screen_share_frame_in", "call_id": callID, "ssrc": vh.Ssrc})
+				}
+				return
+			}
+			deliveredParticipantFrame := false
+			if call != nil {
+				deliveredParticipantFrame = call.dispatchParticipantVideoFrame(ParticipantVideoFrame{
+					ParticipantID: media.ParticipantID,
+					Sender:        media.UserJID,
+					Device:        media.DeviceJID,
+					PID:           media.PID,
+					HasPID:        media.HasPID,
+					SSRC:          vh.Ssrc,
+					Orientation:   videoState.orientation,
+					AccessUnit:    frame,
+				})
+			}
+			if sink := callVideoSink(call); sink != nil {
+				if err := sink.WriteVideo(frame); err != nil {
+					log.Warn().Err(err).Uint32("ssrc", vh.Ssrc).Int("bytes", len(frame)).Msg("failed to write WhatsApp video frame to sink")
+				} else {
+					if videoFrameIn == 0 {
+						log.Info().Uint32("ssrc", vh.Ssrc).Int("bytes", len(frame)).Msg("first WhatsApp video frame written to sink")
+					}
+					videoFrameIn++
+				}
+			} else if !deliveredParticipantFrame {
+				if videoSinkMissing == 0 {
+					log.Warn().Uint32("ssrc", vh.Ssrc).Int("bytes", len(frame)).Msg("WhatsApp video frame arrived with no sink attached")
+				}
+				videoSinkMissing++
+			}
+		}
+		if vidIn++; vidIn == 1 {
+			log.Info().Uint32("ssrc", vh.Ssrc).Msg("first video RTP demuxed from relay (NOT VALIDATED)")
+			e.c.diag.Emit("meta", map[string]any{"event": "first_video_rtp_in", "call_id": callID, "ssrc": vh.Ssrc})
+		}
+	}
+
+	// releaseVideo takes the camera packets the hold let go, in order, and the audio carried by
+	// the packet that caused it. A rebuilt packet's own audio was never played; it is played here.
+	releaseVideo := func(state *videoReceiveState, released []rtp.ReleasedPacket, carried []byte) {
+		var recovered [][]byte
+		for _, packet := range released {
+			header, headerOK := rtp.ParseRtpHeader(packet.Packet)
+			headerLen, lenOK := rtp.RtpHeaderByteLength(packet.Packet)
+			if !headerOK || !lenOK || state == nil {
+				continue
+			}
+			mediaPayload, audio := rtp.SplitAudioPiggyback(packet.Packet, packet.Packet[headerLen:])
+			if packet.Rebuilt && audio != nil {
+				recovered = append(recovered, audio)
+			}
+			pushVideoPayload(state.lastMedia, header, state, mediaPayload)
+		}
+		if state != nil && call != nil {
+			call.stats.foldVideoFec(state.fec.TakeStats())
+		}
+		playRecoveredAudio(recovered, carried)
+	}
+
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -1197,6 +1438,13 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 		n, err := ch.Recv(buf)
 		if err != nil {
 			return fmt.Errorf("relay recv: %w", err)
+		}
+		// Held camera packets whose gap nobody filled in time go on without waiting for the
+		// next camera packet, which a paused peer may not send.
+		for _, state := range videoReceiveStates {
+			if deadline, held := state.fec.Deadline(); held && monoMs() >= deadline {
+				releaseVideo(state, state.fec.Poll(monoMs()), nil)
+			}
 		}
 		currentRosterGeneration, activeReceivers := audioReceivers.ActiveReceiverSnapshot()
 		if !hasRosterGeneration || currentRosterGeneration != rosterGeneration {
@@ -1388,6 +1636,22 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 			}
 			continue
 		}
+		// The peer's video repair stream: a lost camera packet is rebuilt from it. Its packets also
+		// carry audio, as video packets do.
+		if kind == mediaPayloadVideoFEC {
+			media, ok := audioReceivers.UnprotectAuxiliary(pkt)
+			if !ok {
+				continue
+			}
+			repair, carried := rtp.SplitAudioPiggyback(pkt, media.Payload)
+			state := videoReceiveStates[media.receiver]
+			var released []rtp.ReleasedPacket
+			if state != nil && state.ssrc != 0 && !groupMode.Load() {
+				released = state.fec.Repair(monoMs(), state.ssrc, repair)
+			}
+			releaseVideo(state, released, carried)
+			continue
+		}
 		// Demux H.264 (PT 97) to video and emit Annex-B access units on the marker bit.
 		// Source of truth: https://github.com/JotaDev66/WaCalls/blob/2d6a1f666426049a89ef9541414e771acdcf8a16/internal/voip/call/callmanager_video.go#L86-L126
 		if kind == mediaPayloadVideo {
@@ -1452,83 +1716,22 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 				})
 			}
 			videoWirePacket++
-			frame, complete, recoveryNeeded := videoState.assembler.Push(
-				vh.SequenceNumber,
-				vh.Marker,
-				media.Payload,
-			)
-			if recoveryNeeded && shouldSendVideoPLI(lastVideoPLI, vh.Ssrc, time.Now()) {
-				packet, feedbackErr := videoRtcp.pictureLossIndication(vh.Ssrc)
-				if feedbackErr == nil {
-					_, feedbackErr = ch.Send(packet)
-				}
-				if feedbackErr != nil {
-					log.Warn().Err(feedbackErr).Uint32("ssrc", vh.Ssrc).Msg("failed to request video keyframe after RTP loss")
-				}
+			videoState.lastMedia = media
+			mediaPayload, carried := rtp.SplitAudioPiggyback(pkt, media.Payload)
+			if media.ScreenShare || groupMode.Load() {
+				deliverCarriedAudio(carried)
+				pushVideoPayload(media, vh, videoState, mediaPayload)
+				continue
 			}
-			if complete {
-				if videoWireFrame < videoWireFrameLimit {
-					e.c.diag.Emit("video_wire", map[string]any{
-						"event": "access_unit", "direction": "in", "call_id": callID,
-						"frame": videoWireFrame, "ssrc": vh.Ssrc, "rtp_ts": vh.Timestamp,
-						"idr": rtp.AUHasIDR(frame), "bytes": len(frame),
-					})
-				}
-				videoWireFrame++
-				e.c.diag.Emit("video", map[string]any{"event": "frame", "ssrc": vh.Ssrc, "bytes": len(frame), "screen_share": media.ScreenShare})
-				if media.ScreenShare {
-					// A dual-stream screen share is not the camera: it goes only to the
-					// screen-share callback, never to the camera video sink.
-					delivered := call != nil && call.dispatchParticipantScreenFrame(ParticipantVideoFrame{
-						ParticipantID: media.ParticipantID,
-						Sender:        media.UserJID,
-						Device:        media.DeviceJID,
-						PID:           media.PID,
-						HasPID:        media.HasPID,
-						SSRC:          vh.Ssrc,
-						Orientation:   videoState.orientation,
-						AccessUnit:    frame,
-						ScreenShare:   true,
-					})
-					if screenFrameIn++; screenFrameIn == 1 {
-						log.Info().Uint32("ssrc", vh.Ssrc).Bool("delivered", delivered).Msg("first dual-stream screen-share frame received (NOT VALIDATED)")
-						e.c.diag.Emit("meta", map[string]any{"event": "first_screen_share_frame_in", "call_id": callID, "ssrc": vh.Ssrc})
-					}
-					continue
-				}
-				deliveredParticipantFrame := false
-				if call != nil {
-					deliveredParticipantFrame = call.dispatchParticipantVideoFrame(ParticipantVideoFrame{
-						ParticipantID: media.ParticipantID,
-						Sender:        media.UserJID,
-						Device:        media.DeviceJID,
-						PID:           media.PID,
-						HasPID:        media.HasPID,
-						SSRC:          vh.Ssrc,
-						Orientation:   videoState.orientation,
-						AccessUnit:    frame,
-					})
-				}
-				if sink := callVideoSink(call); sink != nil {
-					if err := sink.WriteVideo(frame); err != nil {
-						log.Warn().Err(err).Uint32("ssrc", vh.Ssrc).Int("bytes", len(frame)).Msg("failed to write WhatsApp video frame to sink")
-					} else {
-						if videoFrameIn == 0 {
-							log.Info().Uint32("ssrc", vh.Ssrc).Int("bytes", len(frame)).Msg("first WhatsApp video frame written to sink")
-						}
-						videoFrameIn++
-					}
-				} else if !deliveredParticipantFrame {
-					if videoSinkMissing == 0 {
-						log.Warn().Uint32("ssrc", vh.Ssrc).Int("bytes", len(frame)).Msg("WhatsApp video frame arrived with no sink attached")
-					}
-					videoSinkMissing++
-				}
+			if vh.Ssrc != videoState.ssrc {
+				videoState.fec.Reset()
+				videoState.ssrc = vh.Ssrc
 			}
-			if vidIn++; vidIn == 1 {
-				log.Info().Uint32("ssrc", vh.Ssrc).Msg("first video RTP demuxed from relay (NOT VALIDATED)")
-				e.c.diag.Emit("meta", map[string]any{"event": "first_video_rtp_in", "call_id": callID, "ssrc": vh.Ssrc})
-			}
+			headerLen, _ := rtp.RtpHeaderByteLength(pkt)
+			plain := make([]byte, 0, headerLen+len(media.Payload))
+			plain = append(plain, pkt[:headerLen]...)
+			plain = append(plain, media.Payload...)
+			releaseVideo(videoState, videoState.fec.Arrive(monoMs(), vh.SequenceNumber, plain), carried)
 			continue
 		}
 		if kind != mediaPayloadAudio {
@@ -1557,71 +1760,7 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 			e.c.diag.Emit("srtp", map[string]any{"event": "unprotect_failed", "ssrc": vh.Ssrc, "bytes": n})
 			continue
 		}
-		if call != nil {
-			call.stats.rtpReceived.Add(1)
-			call.stats.framesConcealed.Add(audio.Report.Concealed)
-			call.stats.offPointDropped.Add(audio.Report.OffPoint)
-			call.stats.inactiveOrSID.Add(audio.Report.InactiveOrSID)
-			if audio.StandardOpus {
-				call.stats.standardOpus.Add(1)
-			}
-			if audio.StandardOpusSettled && !groupMode.Load() {
-				call.peerSendsOpus.Store(true)
-			}
-			// A SID is the peer TELLING us it is silent, and the decoder
-			// handled it: a muted peer is a healthy stream. Counted as
-			// production so the silence alarm does not fire through a long
-			// mute - the failures the alarm exists for report off-point or
-			// concealment, never this.
-			// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/e0225b3a/wacore/src/voip/engine.rs#L3087-L3124
-			if audio.Report.Decoded > 0 {
-				call.stats.framesDecoded.Add(1)
-			}
-			if audio.Report.Decoded > 0 || audio.Report.InactiveOrSID > 0 {
-				call.health.onAudioProduced()
-			}
-		}
-		audioReception.Observe(audio.SSRC, vh.SequenceNumber, audio.Timestamp, uint64(time.Now().UnixMilli()), SampleRate)
-		e.c.diag.Emit("rtp", map[string]any{
-			"event": "in", "ssrc": audio.SSRC, "seq": vh.SequenceNumber,
-			"ts": audio.Timestamp, "pt": vh.PayloadType, "marker": vh.Marker,
-			"participant_id": audio.ParticipantID, "pid": audio.PID, "has_pid": audio.HasPID,
-		})
-		e.c.diag.Emit("srtp", map[string]any{
-			"event": "frame_authenticated", "ssrc": audio.SSRC, "seq": vh.SequenceNumber,
-			"participant_id": audio.ParticipantID, "pid": audio.PID, "has_pid": audio.HasPID,
-		})
-		e.c.diag.Emit("media_in", map[string]any{
-			"seq": vh.SequenceNumber, "samples": len(audio.PCM),
-			"pcm_rms": rmsFloat32(audio.PCM), "participant_id": audio.ParticipantID,
-		})
-		mixedMode := groupMixing.Load()
-		playoutLocked := false
-		if !mixedMode {
-			audioPlayoutMu.Lock()
-			playoutLocked = true
-			mixedMode = groupMixing.Load()
-		}
-		if mixedMode {
-			audioMixer.Add(audio.ParticipantID, audio.PCM)
-		} else {
-			_, sink := callPlayerSink(call)
-			playoutStarted, playoutErr := audioPlayout.Push(audio.Timestamp, audio.PCM, sink)
-			if playoutErr != nil {
-				log.Warn().Err(playoutErr).Msg("failed to write timestamp-aligned WhatsApp audio")
-			}
-			if playoutStarted {
-				log.Info().Int("prefill_ms", audioPlayoutPrefillSamples*1000/SampleRate).Msg("started timestamp-aligned inbound audio playout")
-			}
-		}
-		if playoutLocked {
-			audioPlayoutMu.Unlock()
-		}
-		if rtpIn++; rtpIn == 1 {
-			log.Info().Msg("first RTP decoded from relay, inbound audio flowing")
-			e.c.diag.Emit("meta", map[string]any{"event": "first_rtp_in", "call_id": callID})
-			markReady()
-		}
+		playDecodedAudio(vh, audio)
 	}
 }
 

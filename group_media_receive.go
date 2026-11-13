@@ -795,6 +795,29 @@ func (r *participantReceiveRegistry) UnprotectVideo(packet []byte) (unprotectedP
 	return receiver.unprotectedMedia(authenticatedHeader, payload), true
 }
 
+// UnprotectAuxiliary authenticates a packet on the peer's video FEC stream. It answers only for a
+// one-to-one call, whose single remote participant owns every stream the relay bridges; in a group
+// the same SSRC would have to be tied to a participant, which nothing names for a repair stream.
+func (r *participantReceiveRegistry) UnprotectAuxiliary(packet []byte) (unprotectedParticipantMedia, bool) {
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/792923bd62f224078004ea078d640418fe278c00/wacore/src/voip/engine.rs#L3358-L3380
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.hasGroupUpdate || len(r.byVideoSSRC) != 1 {
+		return unprotectedParticipantMedia{}, false
+	}
+	var receiver *participantAudioReceiver
+	for _, only := range r.byVideoSSRC {
+		receiver = only
+	}
+	receiver.mu.Lock()
+	defer receiver.mu.Unlock()
+	header, payload, ok := receiver.videoPipe.UnprotectAuxiliary(packet)
+	if !ok {
+		return unprotectedParticipantMedia{}, false
+	}
+	return receiver.unprotectedMedia(header, payload), true
+}
+
 // unprotectScreenShareLocked authenticates a packet on a participant's dual-stream
 // screen-share SSRC. The caller holds r.mu.
 func (r *participantReceiveRegistry) unprotectScreenShareLocked(ssrc uint32, packet []byte) (unprotectedParticipantMedia, bool) {
@@ -938,6 +961,36 @@ func (r *participantReceiveRegistry) DecodeAudio(packet []byte) (decodedParticip
 			Msg("participant audio failed authentication")
 		return decodedParticipantAudio{}, false
 	}
+	return r.decodeAuthenticatedAudio(receiver, authenticatedHeader, payload), true
+}
+
+// DecodeCarriedAudio decodes a plain audio RTP packet that rode inside an authenticated video
+// or video-FEC packet, which is what protected it: it carries no SRTP of its own.
+func (r *participantReceiveRegistry) DecodeCarriedAudio(packet []byte) (decodedParticipantAudio, bool) {
+	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/792923bd62f224078004ea078d640418fe278c00/wacore/src/voip/engine.rs#L3498-L3540
+	header, ok := rtp.ParseRtpHeader(packet)
+	if !ok || !rtp.IsWhatsappOpusRtpPayload(header.PayloadType) {
+		return decodedParticipantAudio{}, false
+	}
+	payload, ok := rtp.PlainRtpPayload(packet)
+	if !ok {
+		return decodedParticipantAudio{}, false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	receiver := r.bySSRC[header.Ssrc]
+	if receiver == nil {
+		r.log.Debug().Uint32("ssrc", header.Ssrc).Msg("dropping carried audio from inactive participant SSRC")
+		return decodedParticipantAudio{}, false
+	}
+	receiver.mu.Lock()
+	defer receiver.mu.Unlock()
+	return r.decodeAuthenticatedAudio(receiver, header, append([]byte(nil), payload...)), true
+}
+
+// decodeAuthenticatedAudio decodes the payload of an audio packet already authenticated for
+// receiver. The caller holds receiver.mu.
+func (r *participantReceiveRegistry) decodeAuthenticatedAudio(receiver *participantAudioReceiver, authenticatedHeader rtp.RtpHeader, payload []byte) decodedParticipantAudio {
 	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/e0ea6dde8ddc22820a77c2f1fa1a6531662fcff3/wacore/src/voip/engine.rs#L2154
 	// WhatsApp switches a stream to PT 121 (RED) dynamically under loss; the redundancy
 	// flag must track that per packet, not be negotiated once for the call, or a bare
@@ -981,12 +1034,12 @@ func (r *participantReceiveRegistry) DecodeAudio(packet []byte) (decodedParticip
 				decoded.Timestamp -= lead
 				decoded.PCM = pcm
 				decoded.Report = mlow.FrameReport{Decoded: 1}
-				return decoded, true
+				return decoded
 			}
 		}
 		decoded.PCM = make([]float32, FrameSamples)
 		decoded.Report = mlow.FrameReport{Concealed: 1}
-		return decoded, true
+		return decoded
 	}
 	receiver.decoder.SetRedundancy(redundancy)
 	decoded.PCM = receiver.decoder.Decode(payload)
@@ -994,5 +1047,5 @@ func (r *participantReceiveRegistry) DecodeAudio(packet []byte) (decodedParticip
 	if reporting, ok := receiver.decoder.(frameReportingDecoder); ok {
 		decoded.Report = reporting.TakeFrameReport()
 	}
-	return decoded, true
+	return decoded
 }

@@ -9,6 +9,9 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ### engine — call robustness against WhatsApp's stack — `implemented`
 
+- Video of a 1:1 call no longer asks the peer for a keyframe at the first lost packet. Packets behind a sequence gap wait up to 100 ms for the missing one to arrive late or to be rebuilt from the peer's FlexFEC repair packets (payload type 103, one lost packet per repair packet); only a gap given up on costs a keyframe request. Group calls and screen shares are unchanged.
+- The audio WhatsApp carries inside its video and repair packets (header extension element 7) is split off before the video is assembled and played, where it used to be fed to the H.264 depacketizer. Audio that rode a video packet rebuilt from a repair packet is played too, unless the stream has moved past it.
+- `MediaStats` gains `CarriedAudioFrames` and the video repair counters (`VideoRepairsReceived`, `VideoPacketsRecovered`, `VideoGapsSkipped`, `VideoPacketsSkipped`, `VideoPacketsLate`, `VideoParityMismatched`, `VideoRecoveredRejected`).
 - A ringing 1:1 call that the caller turns into a group call (Add participant) no longer stays unanswered after Accept. Like WA Web, the group `<accept>` is sent again to `<call-id>@call` when a committed roster still lists us as not connected after we answered (at most 3 times per call).
 - Peer RTCP reception reports are parsed; `MediaStats.PeerReportedLossPercent` is the smoothed share of our audio the peer lost, for a sender to feed its encoder.
 - A hole left by a lost packet is bridged with faded repeated audio instead of silence.

@@ -242,6 +242,7 @@ const (
 	mediaPayloadAudio
 	mediaPayloadVideo
 	mediaPayloadAppData
+	mediaPayloadVideoFEC
 )
 
 func classifyMediaPayload(header rtp.RtpHeader) mediaPayloadKind {
@@ -250,6 +251,8 @@ func classifyMediaPayload(header rtp.RtpHeader) mediaPayloadKind {
 		return mediaPayloadAppData
 	case header.PayloadType == rtp.RtpPayloadTypeH264:
 		return mediaPayloadVideo
+	case header.PayloadType == rtp.RtpPayloadTypeVideoFec:
+		return mediaPayloadVideoFEC
 	case rtp.IsWhatsappOpusRtpPayload(header.PayloadType):
 		return mediaPayloadAudio
 	default:
