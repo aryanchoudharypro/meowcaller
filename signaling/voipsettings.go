@@ -19,7 +19,10 @@ import (
 // a meowcaller-specific lever, so the parser carries no // Source of truth: port.
 type VoipSettings struct {
 	// UseMlowCodecV1 mirrors encode.use_mlow_codec_v1: true => Meta's 16 kHz MLow
-	// codec, false => RFC Opus. Absent => true (MLow), matching current behavior.
+	// codec, false => RFC Opus. Absent => false (Opus), as in WA's engine: its
+	// voip-params parser leaves the use_mlow_codec field alone when the key is
+	// missing, and nothing sets it on beforehand. Every call the user's logs hold
+	// (Nov 2026) came without the key and the peer sent Opus each time.
 	UseMlowCodecV1 bool
 	// FrameMs mirrors encode.frame_ms (audio frame duration in ms); 0 if absent.
 	FrameMs int
@@ -30,14 +33,14 @@ type VoipSettings struct {
 }
 
 // ParseVoipSettings parses the <voip_settings> JSON content into the codec-relevant
-// subset. An empty blob yields the zero VoipSettings (MLow default); malformed JSON
-// is an error. The values are stringly-typed on the wire ("true"/"60"), so each is
-// converted explicitly; use_mlow_codec_v1 defaults to true (MLow) unless the key is
-// the literal "false".
+// subset. An empty blob yields the zero VoipSettings (Opus); malformed JSON is an
+// error. The values are stringly-typed on the wire ("true"/"60"), so each is
+// converted explicitly; use_mlow_codec_v1 is on only for "true" or a non-zero
+// number, the two forms WA's engine reads as on.
 func ParseVoipSettings(raw []byte, log ...zerolog.Logger) (*VoipSettings, error) {
 	lg := pickLog(log)
 	if len(bytes.TrimSpace(raw)) == 0 {
-		return &VoipSettings{UseMlowCodecV1: true}, nil
+		return &VoipSettings{}, nil
 	}
 	var doc struct {
 		Encode struct {
@@ -53,7 +56,7 @@ func ParseVoipSettings(raw []byte, log ...zerolog.Logger) (*VoipSettings, error)
 		return nil, fmt.Errorf("signaling: parse voip_settings: %w", err)
 	}
 	vs := &VoipSettings{
-		UseMlowCodecV1: doc.Encode.UseMlowCodecV1 != "false",
+		UseMlowCodecV1: settingIsOn(doc.Encode.UseMlowCodecV1),
 		FrameMs:        atoiOrZero(doc.Encode.FrameMs),
 		TargetBitrate:  atoiOrZero(doc.RC.TargetBitrate),
 		Present:        true,
@@ -64,6 +67,16 @@ func ParseVoipSettings(raw []byte, log ...zerolog.Logger) (*VoipSettings, error)
 		Int("target_bitrate", vs.TargetBitrate).
 		Msg("parsed voip_settings")
 	return vs, nil
+}
+
+// settingIsOn reads a boolean voip setting the way WA's engine does: "true", or
+// an integer other than zero.
+func settingIsOn(s string) bool {
+	if s == "true" {
+		return true
+	}
+	n, err := strconv.Atoi(s)
+	return err == nil && n != 0
 }
 
 // atoiOrZero parses a base-10 int, returning 0 for an absent or unparseable value.

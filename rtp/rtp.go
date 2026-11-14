@@ -17,6 +17,12 @@ const (
 	// each payload is a SplitRed envelope (see mlow.DepackSplitRed) instead of a
 	// bare frame. WhatsApp switches a stream to this PT dynamically under loss.
 	RtpPayloadTypeMlowRed uint8 = 121
+	// RtpPayloadTypeMlow is MLow on a payload type of its own. WA's engine
+	// registers its NetEQ decoders by payload type: 120 is whichever codec the
+	// call negotiated ("opus", or "mlow-1" when use_mlow_codec is on), 121 is
+	// "mlow-red-1", and 122 is "mlow-1" when enable_mlow_separate_pt is set
+	// (voip wasm, the RegisterPayloadType calls beside neteq_jb_create).
+	RtpPayloadTypeMlow uint8 = 122
 	// RtpPayloadTypeAppData carries protobuf call reactions and other RTC app data.
 	RtpPayloadTypeAppData uint8 = 119
 	// RtpPayloadTypeH264 is the WhatsApp video (H.264) RTP payload type, used to demux
@@ -53,7 +59,7 @@ var OpusPrimingFrame2 = [5]byte{0x90, 0xb8, 0x14, 0x14, 0xc4}
 // IsWhatsappOpusRtpPayload reports whether the payload type is WhatsApp Opus.
 func IsWhatsappOpusRtpPayload(payloadType uint8) bool {
 	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/41095d4e6ba4610e054e9ede3af1d5e88a83faee/wacore/src/voip/rtp.rs#L28-L30
-	return payloadType == RtpPayloadTypeOpus || payloadType == RtpPayloadTypeMlowRed
+	return payloadType == RtpPayloadTypeOpus || payloadType == RtpPayloadTypeMlowRed || payloadType == RtpPayloadTypeMlow
 }
 
 // IsOpusDtxPayload reports DTX / comfort-noise frames (RFC 0x10, mlow 0x90, warmup).

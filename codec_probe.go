@@ -176,6 +176,19 @@ type inboundCodecProbe struct {
 	// mlowRejected is how many packets in a row the MLow decoder could not
 	// decode (concealed or refused off its operating point).
 	mlowRejected uint8
+	// disagreeing is consecutive packets at the 60 ms step whose Opus header
+	// did NOT match the step. Standard Opus at that step always matches; MLow
+	// never does (TestInboundCodecProbeNeverPromotesMlow).
+	disagreeing uint8
+}
+
+// codecProbeMlowEvidence is how many disagreeing packets in a row show a peer
+// is sending MLow on a call that negotiated Opus.
+const codecProbeMlowEvidence = 10
+
+// looksMlow reports that the stream's packets keep contradicting Opus.
+func (p *inboundCodecProbe) looksMlow() bool {
+	return p.disagreeing >= codecProbeMlowEvidence
 }
 
 // noteMlowDecode records what the MLow decoder made of one of this stream's
@@ -225,8 +238,12 @@ func (p *inboundCodecProbe) observe(payload []byte, sequence uint16, timestamp u
 	}
 	if declared, ok := opusPacketSamples(payload, SampleRate); !ok || declared != span {
 		p.agreeing = 0
+		if span == FrameSamples && p.disagreeing < 255 {
+			p.disagreeing++
+		}
 		return false, false
 	}
+	p.disagreeing = 0
 	if p.agreeing++; p.agreeing < codecProbeAgreeingPackets {
 		return true, false
 	}

@@ -129,6 +129,10 @@ type participantReceiveRegistry struct {
 	rosterGeneration uint64
 	hasGroupUpdate   bool
 	decoderFactory   func() participantAudioDecoder
+	// negotiatedOpus, when set, says the call negotiated standard Opus for
+	// payload type 120, so packets there go to the Opus decoder without
+	// waiting for the probe (as WA's engine registers "opus" for 120).
+	negotiatedOpus   func() bool
 	byDeviceID       map[string]*participantAudioReceiver
 	byPID            map[uint32]*participantAudioReceiver
 	bySSRC           map[uint32]*participantAudioReceiver
@@ -999,6 +1003,8 @@ func (r *participantReceiveRegistry) decodeAuthenticatedAudio(receiver *particip
 	standardOpus := false
 	if authenticatedHeader.PayloadType == rtp.RtpPayloadTypeMlowRed {
 		redundancy = 1
+	} else if authenticatedHeader.PayloadType == rtp.RtpPayloadTypeMlow {
+		// MLow on its own payload type: no question which decoder.
 	} else {
 		// The payload type carries either codec and only the negotiation says
 		// which. A packet whose Opus header agrees with its timestamp step
@@ -1013,6 +1019,16 @@ func (r *participantReceiveRegistry) decodeAuthenticatedAudio(receiver *particip
 				Msg("peer is sending standard Opus on the MLow payload type; decoding it as Opus")
 		}
 		standardOpus = agrees || receiver.codecProbe.opus
+		if r.negotiatedOpus != nil && r.negotiatedOpus() {
+			// Decoded as the call negotiated, unless the peer's packets keep
+			// contradicting Opus: then it is sending MLow after all.
+			standardOpus = !receiver.codecProbe.looksMlow()
+			if !standardOpus && receiver.codecProbe.disagreeing == codecProbeMlowEvidence {
+				r.log.Warn().Str("call_id", r.callID).Str("participant_id", receiver.participantID).
+					Uint8("toc_byte", payload[0]).
+					Msg("call negotiated Opus but the peer's packets read as MLow; decoding them as MLow")
+			}
+		}
 	}
 	decoded := decodedParticipantAudio{
 		ParticipantID: receiver.participantID,

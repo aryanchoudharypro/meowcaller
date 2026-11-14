@@ -522,6 +522,7 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 		if err != nil {
 			return err
 		}
+		audioReceivers.negotiatedOpus = func() bool { return call != nil && call.negotiatedOpus.Load() }
 		unpublishedReceivers := audioReceivers
 		defer func() {
 			if unpublishedReceivers != nil {

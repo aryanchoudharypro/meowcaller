@@ -400,3 +400,65 @@ func TestDecodeAudioSettlesAPeerSending120msOpus(t *testing.T) {
 		t.Fatalf("decoded 120 ms Opus is silent (rms %.4f)", rms)
 	}
 }
+
+// As in WA's engine, payload type 120 is decoded as the codec the call
+// negotiated: an Opus call needs no probing, from its first packet; 122 is
+// MLow whatever was negotiated; and a peer that sends MLow on an Opus call
+// anyway is caught by its packets contradicting Opus.
+func TestDecodeAudioFollowsTheNegotiatedCodecAndPayloadType(t *testing.T) {
+	callKey := make([]byte, 32)
+	for i := range callKey {
+		callKey[i] = byte(i + 11)
+	}
+	self, peer := mediaTestJID("100", 1), mediaTestJID("200", 2)
+	mlowDecoder := &recordingParticipantDecoder{}
+	registry, err := newParticipantReceiveRegistry("CID", callKey, self.String(), peer.String(),
+		func() participantAudioDecoder { return mlowDecoder })
+	if err != nil {
+		t.Fatal(err)
+	}
+	opusCall := true
+	registry.negotiatedOpus = func() bool { return opusCall }
+	ssrc, err := rtp.DeriveWasmParticipantSsrc("CID", rtp.FormatE2ESrtpParticipantID(peer.String()), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender, err := NewMediaPipeline(callKey, peer.String(), self.String(), ssrc, FrameSamples)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frames := loadFixtureFrames(t, "testdata/opus_silk_wb_60ms_frames.json")
+	warmUpLibopus(frames)
+	packet, _ := sender.ProtectAudio(frames[1])
+	if audio, ok := registry.DecodeAudio(packet); !ok || !audio.StandardOpus {
+		t.Fatal("the first packet of a call that negotiated Opus was not decoded as Opus")
+	}
+
+	// Payload type 122: MLow.
+	header := rtp.RtpHeader{PayloadType: rtp.RtpPayloadTypeMlow, SequenceNumber: 500, Timestamp: 99_000, Ssrc: ssrc}
+	packet, err = sender.ProtectRTP(&header, []byte{0x10, 1, 2, 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if audio, ok := registry.DecodeAudio(packet); !ok || audio.StandardOpus {
+		t.Fatal("payload type 122 was not decoded as MLow")
+	}
+
+	// MLow on 120 (a 60 ms MLow TOC 0x10 body never matches Opus at the
+	// 60 ms step): Opus at first, MLow once the evidence is in.
+	mlowSeen := len(mlowDecoder.payloads)
+	asMlow := 0
+	for i := 0; i < codecProbeMlowEvidence+5; i++ {
+		packet, _ := sender.ProtectAudio([]byte{0x10, byte(i), 7, 7, 7, 7, 7})
+		audio, ok := registry.DecodeAudio(packet)
+		if !ok {
+			t.Fatalf("packet %d did not authenticate", i)
+		}
+		if !audio.StandardOpus {
+			asMlow++
+		}
+	}
+	if asMlow == 0 || len(mlowDecoder.payloads)-mlowSeen != asMlow {
+		t.Fatalf("an MLow peer on an Opus call was never handed to the MLow decoder (%d packets)", asMlow)
+	}
+}
