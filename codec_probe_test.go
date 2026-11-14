@@ -9,6 +9,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/purpshell/meowcaller/mlow"
 	"github.com/purpshell/meowcaller/rtp"
 )
 
@@ -296,5 +297,106 @@ func TestCallSendsStandardOpusOnNegotiationOrEvidence(t *testing.T) {
 	call.peerSendsOpus.Store(true)
 	if !call.StandardOpus() {
 		t.Fatal("a peer found sending Opus is not answered in Opus")
+	}
+}
+
+// Two 60 ms SILK frames as one code-2 packet (TOC 0x5a): the 120 ms Opus a
+// phone sends in a video call.
+func opus120msPacket(first, second []byte) []byte {
+	if first[0] != 0x58 || second[0] != 0x58 || len(first)-1 >= 252 {
+		panic("opus120msPacket wants single-frame 60 ms SILK packets with short bodies")
+	}
+	out := []byte{0x5a, byte(len(first) - 1)}
+	out = append(out, first[1:]...)
+	return append(out, second[1:]...)
+}
+
+func TestInboundCodecProbeTakes120msOpusOnlyOnceMlowRefusesTheStream(t *testing.T) {
+	frames := loadFixtureFrames(t, "testdata/opus_silk_wb_60ms_frames.json")
+	packet := opus120msPacket(frames[4], frames[5])
+	if declared, ok := opusPacketSamples(packet, SampleRate); !ok || declared != 2*FrameSamples {
+		t.Fatalf("120 ms packet declares %d samples, ok=%v", declared, ok)
+	}
+	var probe inboundCodecProbe
+	sequence, timestamp := uint16(10), uint32(0)
+	feed := func() (bool, bool) {
+		sequence++
+		timestamp += 2 * FrameSamples
+		return probe.observe(packet, sequence, timestamp)
+	}
+	// A MLow peer decoding fine at 120 ms is never read as Opus.
+	for i := 0; i < 10; i++ {
+		if agrees, settled := feed(); agrees || settled {
+			t.Fatalf("packet %d at a 120 ms step counted without MLow refusing it", i)
+		}
+		probe.noteMlowDecode(mlow.FrameReport{Decoded: 1})
+	}
+	// MLow refusing the stream makes the step evidence.
+	for i := 0; i < codecProbeMlowRejections; i++ {
+		feed()
+		probe.noteMlowDecode(mlow.FrameReport{Concealed: 1})
+	}
+	for i := 0; i < codecProbeAgreeingPackets-1; i++ {
+		if agrees, settled := feed(); !agrees || settled {
+			t.Fatalf("agreeing packet %d = (%v, %v)", i, agrees, settled)
+		}
+	}
+	if agrees, settled := feed(); !agrees || !settled || !probe.opus {
+		t.Fatal("120 ms Opus with MLow refusing it did not settle")
+	}
+}
+
+// End to end: a peer sending 120 ms Opus from its first packet is decoded as
+// Opus after the real MLow decoder has refused a few packets.
+func TestDecodeAudioSettlesAPeerSending120msOpus(t *testing.T) {
+	callKey := make([]byte, 32)
+	for i := range callKey {
+		callKey[i] = byte(i + 7)
+	}
+	self, peer := mediaTestJID("100", 1), mediaTestJID("200", 2)
+	registry, err := newParticipantReceiveRegistry("CID", callKey, self.String(), peer.String(), nil)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	ssrc, err := rtp.DeriveWasmParticipantSsrc("CID", rtp.FormatE2ESrtpParticipantID(peer.String()), 0)
+	if err != nil {
+		t.Fatalf("derive SSRC: %v", err)
+	}
+	sender, err := NewMediaPipeline(callKey, peer.String(), self.String(), ssrc, 2*FrameSamples)
+	if err != nil {
+		t.Fatalf("sender: %v", err)
+	}
+	frames := loadFixtureFrames(t, "testdata/opus_silk_wb_60ms_frames.json")
+	settledAt := -1
+	var pcm []float32
+	for i := 0; i+1 < len(frames); i += 2 {
+		protected, protectErr := sender.ProtectAudio(opus120msPacket(frames[i], frames[i+1]))
+		if protectErr != nil {
+			t.Fatalf("protect: %v", protectErr)
+		}
+		audio, ok := registry.DecodeAudio(protected)
+		if !ok {
+			t.Fatalf("packet %d did not authenticate", i/2)
+		}
+		if audio.StandardOpusSettled && settledAt < 0 {
+			settledAt = i / 2
+		}
+		if audio.StandardOpus {
+			pcm = append(pcm, audio.PCM...)
+		}
+	}
+	t.Logf("settled at packet %d, %d Opus samples", settledAt, len(pcm))
+	if settledAt < 0 || settledAt > codecProbeMlowRejections+codecProbeAgreeingPackets+1 {
+		t.Fatalf("120 ms Opus settled at packet %d", settledAt)
+	}
+	if len(pcm) < 4*2*FrameSamples {
+		t.Fatalf("only %d samples decoded as Opus", len(pcm))
+	}
+	var energy float64
+	for _, sample := range pcm[2*FrameSamples:] {
+		energy += float64(sample) * float64(sample)
+	}
+	if rms := math.Sqrt(energy / float64(len(pcm)-2*FrameSamples)); rms < 0.02 {
+		t.Fatalf("decoded 120 ms Opus is silent (rms %.4f)", rms)
 	}
 }

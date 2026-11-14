@@ -9,6 +9,8 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ### engine — call robustness against WhatsApp's stack — `implemented`
 
+- A peer sending standard Opus in 120 ms packets (two 60 ms SILK frames, TOC 0x59-0x5b) is now recognised. WhatsApp's phones do this in video calls; the codec probe only took the 60 ms step as evidence, so every packet went to the MLow decoder and the call had no incoming audio. A 120 ms step counts once the MLow decoder has refused three packets in a row, since MLow reads those TOCs as 120 ms too.
+- A packet that trips one of libopus's compiled-in assertions now costs that packet instead of panicking the call; the decoder is replaced. The port trips one on the first decode of every process.
 - Video of a 1:1 call no longer asks the peer for a keyframe at the first lost packet. Packets behind a sequence gap wait up to 100 ms for the missing one to arrive late or to be rebuilt from the peer's FlexFEC repair packets (payload type 103, one lost packet per repair packet); only a gap given up on costs a keyframe request. Group calls and screen shares are unchanged.
 - The audio WhatsApp carries inside its video and repair packets (header extension element 7) is split off before the video is assembled and played, where it used to be fed to the H.264 depacketizer. Audio that rode a video packet rebuilt from a repair packet is played too, unless the stream has moved past it.
 - `MediaStats` gains `CarriedAudioFrames` and the video repair counters (`VideoRepairsReceived`, `VideoPacketsRecovered`, `VideoGapsSkipped`, `VideoPacketsSkipped`, `VideoPacketsLate`, `VideoParityMismatched`, `VideoRecoveredRejected`).

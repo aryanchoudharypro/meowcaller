@@ -54,7 +54,26 @@ func (d *standardOpusDecoder) decode(payload []byte) (pcm []float32, ok bool) {
 // went missing just before it, the audio returned starts earlier, at
 // ts-lead, and begins with what libopus recovers for them: the packet's own
 // in-band FEC for one lost packet, concealment for up to maxConcealedFrames.
+//
+// libopus is a C port with its assertions compiled in, and a packet that only
+// looks like Opus can trip one, which surfaces as a panic. One bad packet
+// must not end the call, so the panic is caught, the packet dropped, and the
+// decoder replaced, since its state is no longer trustworthy.
 func (d *standardOpusDecoder) decodeAt(payload []byte, ts uint32) (pcm []float32, lead uint32, ok bool) {
+	defer func() {
+		if recover() != nil {
+			pcm, lead, ok = nil, 0, false
+			if fresh, err := opus.NewDecoder(SampleRate, 1); err == nil {
+				_ = d.dec.Close()
+				d.dec = fresh
+			}
+			d.hasLast = false
+		}
+	}()
+	return d.decodeAtUnguarded(payload, ts)
+}
+
+func (d *standardOpusDecoder) decodeAtUnguarded(payload []byte, ts uint32) (pcm []float32, lead uint32, ok bool) {
 	samples, valid := opusPacketSamples(payload, SampleRate)
 	frame := int(samples)
 	if !valid || frame <= 0 || frame > len(d.buf) {

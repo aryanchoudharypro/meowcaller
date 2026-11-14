@@ -1,5 +1,7 @@
 package meowcaller
 
+import "github.com/purpshell/meowcaller/mlow"
+
 // MLow and standard Opus share RTP payload type 120, and their first bytes
 // collide: 0x58 is a 120 ms MLow packet under one grammar and a 60 ms SILK
 // wideband Opus packet under the other. No amount of staring at the byte
@@ -21,6 +23,9 @@ const (
 	// the verdict. One is too few: a single MLow body could coincidentally parse
 	// as a valid Opus header of the right duration. Three is ~180 ms of audio.
 	codecProbeAgreeingPackets = 3
+	// codecProbeMlowRejections is how many packets in a row the MLow decoder
+	// must have refused before a 120 ms timestamp step counts as evidence.
+	codecProbeMlowRejections = 3
 )
 
 // opusFrameDurationUs is RFC 6716 table 2: one frame's duration for a
@@ -168,6 +173,22 @@ type inboundCodecProbe struct {
 	// and letting a second opinion thrash the decoder is worse than staying
 	// wrong in one direction.
 	opus bool
+	// mlowRejected is how many packets in a row the MLow decoder could not
+	// decode (concealed or refused off its operating point).
+	mlowRejected uint8
+}
+
+// noteMlowDecode records what the MLow decoder made of one of this stream's
+// packets. A run of refusals is the second witness a 120 ms step needs.
+func (p *inboundCodecProbe) noteMlowDecode(report mlow.FrameReport) {
+	switch {
+	case report.Decoded > 0 || report.InactiveOrSID > 0:
+		p.mlowRejected = 0
+	case report.Concealed > 0 || report.OffPoint > 0:
+		if p.mlowRejected < 255 {
+			p.mlowRejected++
+		}
+	}
 }
 
 // observe feeds one authenticated inbound payload. agrees reports that this
@@ -189,7 +210,16 @@ func (p *inboundCodecProbe) observe(payload []byte, sequence uint16, timestamp u
 	// {10,20,40,60}, so the two grammars agree by construction at 10 and 20 ms.
 	// At the negotiated 960-sample step the collision cannot happen: those same
 	// MLow durations read as 40 ms of Opus, and 960 is not a multiple of 640.
-	if span != FrameSamples {
+	//
+	// WhatsApp's phones send 120 ms Opus packets (two 60 ms SILK frames, TOC
+	// 0x59..0x5b) in video calls and on bad networks. At that 1920-sample
+	// step the grammars collide again (MLow reads those TOCs as 120 ms too),
+	// so the step only counts once the MLow decoder has been refusing this
+	// stream's packets: a peer really sending MLow decodes.
+	switch {
+	case span == FrameSamples:
+	case span == 2*FrameSamples && p.mlowRejected >= codecProbeMlowRejections:
+	default:
 		p.agreeing = 0
 		return false, false
 	}

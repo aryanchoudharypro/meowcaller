@@ -1046,6 +1046,9 @@ func (r *participantReceiveRegistry) decodeAuthenticatedAudio(receiver *particip
 	decoded.Report = mlow.FrameReport{Decoded: 1}
 	if reporting, ok := receiver.decoder.(frameReportingDecoder); ok {
 		decoded.Report = reporting.TakeFrameReport()
+		if redundancy == 0 {
+			receiver.codecProbe.noteMlowDecode(decoded.Report)
+		}
 	}
 	return decoded
 }
