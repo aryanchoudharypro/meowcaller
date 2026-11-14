@@ -378,7 +378,7 @@ type VideoRtpStream struct {
 }
 
 func NewVideoRtpStream(ssrc, tsStride uint32) *VideoRtpStream {
-	return &VideoRtpStream{ssrc: ssrc, seq: 1, tsStride: tsStride, frameNumber: 1, firstPacket: true}
+	return &VideoRtpStream{ssrc: ssrc, seq: InitialSequence, tsStride: tsStride, frameNumber: 1, firstPacket: true}
 }
 
 func (s *VideoRtpStream) RtpTimestamp() uint32 {
@@ -432,13 +432,19 @@ func (s *VideoRtpStream) NextPacket(lastInAccessUnit bool, mediaFrameInfo uint8)
 }
 
 // NewRtpStream builds a sequencer for ssrc with samplesPerPacket per packet.
+// InitialSequence is the first RTP sequence number of every stream created
+// after it is set. It is 1, as WhatsApp's clients start; a test build can set
+// it near 65535 so the 16-bit sequence wraps (and the SRTP rollover counter
+// moves) seconds into a call instead of after an hour of audio.
+var InitialSequence uint16 = 1
+
 func NewRtpStream(ssrc, samplesPerPacket uint32, warpPiggyback bool, opts ...Option) *RtpStream {
 	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/41095d4e6ba4610e054e9ede3af1d5e88a83faee/wacore/src/voip/rtp.rs#L189-L200
 	log := resolveConfig(opts).log
 	log.Debug().Uint32("ssrc", ssrc).Uint32("samples_per_packet", samplesPerPacket).Bool("warp_piggyback", warpPiggyback).Msg("rtp stream created")
 	return &RtpStream{
 		Ssrc:             ssrc,
-		seq:              1,
+		seq:              InitialSequence,
 		samplesPerPacket: samplesPerPacket,
 		warpPiggyback:    warpPiggyback,
 		log:              log,

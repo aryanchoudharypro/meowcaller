@@ -9,6 +9,7 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ### engine — call robustness against WhatsApp's stack — `implemented`
 
+- `rtp.InitialSequence` sets the first sequence number of new RTP streams (default 1, as before), so a test build can make the 16-bit sequence wrap seconds into a call; a test pins that our own audio authenticates across the wrap.
 - Video goes only to the relay the peer's media currently arrives from (the relay the peer elected), not to every offered relay; with nothing heard lately it is still broadcast. Audio is still sent to every relay. WhatsApp's clients carry media over one elected relay (WA Web: `send_standalone_warp_pr_to_non_elected_relay`, `enable_implicit_relay_election_on_rx_pkts`); broadcasting a screen share tripled the uplink it needed.
 - A large video frame is paced out in bursts of four packets over the first half of its duration instead of leaving in one burst, without holding the sender's lock across the pauses.
 - The relay's own hop-by-hop RTCP is read. Its keys come from the relay block's `<hbh_key>` (now parsed for 1:1 calls too) through WA Web's `derive_hbh_srtp_key` labels, read out of the voip wasm (`srtp.HbhSrtcpReceiveCandidates`); which of the derived keyings the relay uses is not yet known, so each is tried and the first to authenticate is kept and logged ("relay hop-by-hop RTCP authenticated", then "relay RTCP" with the packet types). Until now every such packet failed authentication; the unexplained 30-byte ones are exactly the size of a protected one-entry NACK.
