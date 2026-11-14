@@ -53,6 +53,19 @@ type AudioSink interface {
 	Close() error
 }
 
+// OpusPacketSink is an AudioSink that takes the peer's standard Opus packets
+// undecoded, to decode them itself at playout time, the way WhatsApp's own
+// engine (NetEQ) does: only the playout knows when a packet is too late, can
+// conceal at exactly that moment and later decode the packet that was waited
+// for, or rebuild a lost one from the next packet's in-band FEC. A 1:1 call
+// whose peer sends standard Opus hands each packet here, with its RTP
+// timestamp and sequence number, instead of decoded PCM to WriteFrame; MLow,
+// and a group call's mix, still arrive through WriteFrame.
+type OpusPacketSink interface {
+	AudioSink
+	WriteOpusPacket(ssrc uint32, sequence uint16, timestamp uint32, packet []byte) error
+}
+
 // SinkFunc adapts a plain function to an AudioSink (Close is a no-op).
 type SinkFunc func(frame []float32)
 

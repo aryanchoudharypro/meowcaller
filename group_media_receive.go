@@ -42,6 +42,11 @@ type decodedParticipantAudio struct {
 	// StandardOpusSettled means the stream as a whole is settled as standard
 	// Opus, which is also what the peer expects to be sent.
 	StandardOpusSettled bool
+	// Packet is the standard Opus packet itself (a copy), with its RTP
+	// sequence number and timestamp, for an OpusPacketSink.
+	Packet          []byte
+	Sequence        uint16
+	PacketTimestamp uint32
 }
 
 type unprotectedParticipantMedia struct {
@@ -1039,6 +1044,9 @@ func (r *participantReceiveRegistry) decodeAuthenticatedAudio(receiver *particip
 	if standardOpus {
 		decoded.StandardOpus = true
 		decoded.StandardOpusSettled = receiver.codecProbe.opus
+		decoded.Packet = append([]byte(nil), payload...)
+		decoded.Sequence = authenticatedHeader.SequenceNumber
+		decoded.PacketTimestamp = authenticatedHeader.Timestamp
 		if receiver.opusDecoder == nil {
 			var err error
 			if receiver.opusDecoder, err = newStandardOpusDecoder(); err != nil {

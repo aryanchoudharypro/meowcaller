@@ -190,6 +190,7 @@ func TestDecodeAudioDecodesAStandardOpusPeer(t *testing.T) {
 	// A DTX packet in the middle of the stream is a silent slot, not an error.
 	frames = append(frames[:20:20], append([][]byte{OpusSilencePacket}, frames[20:]...)...)
 	var pcm []float32
+	var lastTimestamp uint32
 	for i, frame := range frames {
 		if frame[0] != 0x58 {
 			t.Fatalf("fixture frame %d is TOC %#02x, not 60 ms SILK wideband", i, frame[0])
@@ -211,6 +212,14 @@ func TestDecodeAudioDecodesAStandardOpusPeer(t *testing.T) {
 		if !audio.StandardOpus {
 			continue
 		}
+		// An OpusPacketSink gets the packet itself, as sent, with its timestamp.
+		if !bytes.Equal(audio.Packet, frame) {
+			t.Fatalf("packet %d handed on as %x, sent %x", i, audio.Packet, frame)
+		}
+		if i > 1 && audio.PacketTimestamp-lastTimestamp != FrameSamples {
+			t.Fatalf("packet %d timestamp step %d", i, audio.PacketTimestamp-lastTimestamp)
+		}
+		lastTimestamp = audio.PacketTimestamp
 		if audio.Report.Decoded != 1 || audio.Report.Concealed != 0 || len(audio.PCM) != FrameSamples {
 			t.Fatalf("packet %d report = %+v with %d samples", i, audio.Report, len(audio.PCM))
 		}

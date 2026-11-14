@@ -1287,12 +1287,20 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 			audioMixer.Add(audio.ParticipantID, audio.PCM)
 		} else {
 			_, sink := callPlayerSink(call)
-			playoutStarted, playoutErr := audioPlayout.Push(audio.Timestamp, audio.PCM, sink)
-			if playoutErr != nil {
-				log.Warn().Err(playoutErr).Msg("failed to write timestamp-aligned WhatsApp audio")
-			}
-			if playoutStarted {
-				log.Info().Int("prefill_ms", audioPlayoutPrefillSamples*1000/SampleRate).Msg("started timestamp-aligned inbound audio playout")
+			if opusSink, ok := sink.(OpusPacketSink); ok && audio.Packet != nil {
+				// The sink decodes and conceals at playout time itself; the
+				// PCM decoded here only kept the call's stats and health.
+				if err := opusSink.WriteOpusPacket(audio.SSRC, audio.Sequence, audio.PacketTimestamp, audio.Packet); err != nil {
+					log.Warn().Err(err).Msg("failed to hand a WhatsApp Opus packet to the sink")
+				}
+			} else {
+				playoutStarted, playoutErr := audioPlayout.Push(audio.Timestamp, audio.PCM, sink)
+				if playoutErr != nil {
+					log.Warn().Err(playoutErr).Msg("failed to write timestamp-aligned WhatsApp audio")
+				}
+				if playoutStarted {
+					log.Info().Int("prefill_ms", audioPlayoutPrefillSamples*1000/SampleRate).Msg("started timestamp-aligned inbound audio playout")
+				}
 			}
 		}
 		if playoutLocked {
