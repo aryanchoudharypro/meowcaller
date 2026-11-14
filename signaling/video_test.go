@@ -198,8 +198,8 @@ func TestVideoUpgradeAcceptThenEnabledShapes(t *testing.T) {
 	if state, _ := attrString(video, "state"); state != "4" {
 		t.Fatalf("accept state = %q, want 4", state)
 	}
-	if dec, _ := attrString(video, "dec"); dec != "H264,AV1" {
-		t.Fatalf("accept dec = %q, want H264,AV1", dec)
+	if dec, _ := attrString(video, "dec"); dec != "H264" {
+		t.Fatalf("accept dec = %q, want H264 (the only video meowcaller can depacketize)", dec)
 	}
 
 	enabled := BuildVideoStateWithParams(VideoStateParams{

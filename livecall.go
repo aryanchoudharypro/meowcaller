@@ -48,6 +48,9 @@ type Call struct {
 	onScreenKeyframeRequest   func()
 	onParticipantVideoFrame   func(ParticipantVideoFrame)
 	onParticipantScreenFrame  func(ParticipantVideoFrame)
+	// peerKeyframeWanted is a keyframe request from the application's decoder:
+	// 1<<32 | the stream's SSRC (0 for any stream), or 0 for none.
+	peerKeyframeWanted atomic.Uint64
 	onReaction                func(CallReaction)
 	groupState                *GroupCallState
 	onGroupState              func(GroupCallState)
@@ -798,6 +801,31 @@ func (c *Call) onReactionFn() func(CallReaction) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.onReaction
+}
+
+// RequestPeerVideoKeyframe asks the sender of video stream ssrc (0: whichever
+// stream is received next) for a keyframe, the way a receiver whose decoder
+// lost its reference does: an RTCP PLI goes out with that stream's next packet,
+// rate-limited like the PLIs sent on packet loss. Use it when a frame was
+// dropped or failed to decode after the depacketizer delivered it.
+func (c *Call) RequestPeerVideoKeyframe(ssrc uint32) {
+	c.peerKeyframeWanted.Store(1<<32 | uint64(ssrc))
+}
+
+// takePeerKeyframeRequest reports, once, whether the application asked for a
+// keyframe on stream ssrc.
+func (c *Call) takePeerKeyframeRequest(ssrc uint32) bool {
+	if c == nil {
+		return false
+	}
+	wanted := c.peerKeyframeWanted.Load()
+	if wanted == 0 {
+		return false
+	}
+	if target := uint32(wanted); target != 0 && target != ssrc {
+		return false
+	}
+	return c.peerKeyframeWanted.CompareAndSwap(wanted, 0)
 }
 
 func (c *Call) requestVideoKeyframe() {

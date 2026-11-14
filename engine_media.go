@@ -1365,6 +1365,9 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 			vh.Marker,
 			payload,
 		)
+		if call.takePeerKeyframeRequest(vh.Ssrc) {
+			recoveryNeeded = true
+		}
 		if recoveryNeeded && shouldSendVideoPLI(lastVideoPLI, vh.Ssrc, time.Now()) {
 			packet, feedbackErr := videoRtcp.pictureLossIndication(vh.Ssrc)
 			if feedbackErr == nil {

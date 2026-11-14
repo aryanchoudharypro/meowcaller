@@ -19,9 +19,13 @@ const VideoCodecH264 = "h264"
 // WhatsApp video negotiation.
 const VideoStateDecH264 = "H264"
 
+// The decoders a <video> transition declares. WA Web accepts with "H264,AV1"
+// because a browser decodes AV1; meowcaller only depacketizes H.264 (see
+// rtp/h264.go), so declaring AV1 would let a peer pick a stream nothing here
+// can play.
 const (
 	VideoDecRequest = "H264"
-	VideoDecAccept  = "H264,AV1"
+	VideoDecAccept  = "H264"
 )
 
 const (
