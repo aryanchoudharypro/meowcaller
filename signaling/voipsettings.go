@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/rs/zerolog"
 )
@@ -86,4 +89,35 @@ func atoiOrZero(s string) int {
 		return 0
 	}
 	return n
+}
+
+// highQualityAudioKey matches the voip_settings keys WA's engine reads for
+// audio above its usual 16 kHz wideband (from the WA Web voip wasm's settings
+// table: encode.opus_max_bandwidth, force_swb, enable_48khz_rtp_clock,
+// enable_sampling_rate_overrides, ...). None of them has been seen from the
+// server so far: every call has run 16 kHz Opus or MLow.
+var highQualityAudioKey = regexp.MustCompile(`(?i)swb|48khz|fullband|full_band|opus_max_bandwidth|sampling_rate`)
+
+// HighQualityAudioSettings returns "section.key=value" for each setting in a
+// voip_settings blob that would ask for audio above 16 kHz wideband, so a call
+// can say so in its log the day the server turns one on.
+func HighQualityAudioSettings(raw []byte) []string {
+	var doc map[string]json.RawMessage
+	if json.Unmarshal(raw, &doc) != nil {
+		return nil
+	}
+	var found []string
+	for section, body := range doc {
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(body, &fields) != nil {
+			continue
+		}
+		for key, value := range fields {
+			if highQualityAudioKey.MatchString(key) {
+				found = append(found, section+"."+key+"="+strings.Trim(string(value), `"`))
+			}
+		}
+	}
+	sort.Strings(found)
+	return found
 }

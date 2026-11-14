@@ -1374,8 +1374,43 @@ func (e *engine) applyVoipSettingsCodec(m *engineCall, node *waBinary.Node, call
 		} else {
 			m.localCodec = selectAudioCodec(vs)
 		}
+		if hq := signaling.HighQualityAudioSettings(content); len(hq) > 0 {
+			e.c.log.Warn().Str("call_id", callID).Strs("settings", hq).
+				Msg("HIGH-QUALITY AUDIO: the server sent settings for audio above 16 kHz wideband; this call still runs 16 kHz")
+		}
+	}
+	if rates := unusualAudioRates(node); len(rates) > 0 {
+		e.c.log.Warn().Str("call_id", callID).Strs("rates", rates).
+			Msg("HIGH-QUALITY AUDIO: the peer offered an audio rate other than 8/16 kHz; this call still runs 16 kHz")
 	}
 	e.resolveAudioCodec(m, callID)
+}
+
+// unusualAudioRates returns the <audio enc rate> entries anywhere in a call
+// stanza whose rate isn't the 16000 or 8000 every WhatsApp client offers today:
+// how a peer would offer audio above wideband (WA's engine negotiates the
+// sampling rate, negotiated_audio_sampling_rates in the voip wasm).
+func unusualAudioRates(node *waBinary.Node) []string {
+	if node == nil {
+		return nil
+	}
+	var found []string
+	var walk func(n waBinary.Node, depth int)
+	walk = func(n waBinary.Node, depth int) {
+		if n.Tag == "audio" {
+			ag := n.AttrGetter()
+			if rate := ag.OptionalString("rate"); rate != "" && rate != "16000" && rate != "8000" {
+				found = append(found, ag.OptionalString("enc")+"/"+rate)
+			}
+		}
+		if depth < 4 {
+			for _, child := range n.GetChildren() {
+				walk(child, depth+1)
+			}
+		}
+	}
+	walk(*node, 0)
+	return found
 }
 
 // peerCapabilityBit reads one capability index out of a peer-sent stanza. The
