@@ -1,6 +1,8 @@
 package srtp
 
 import (
+	"encoding/base64"
+
 	"github.com/purpshell/meowcaller/util"
 )
 
@@ -38,10 +40,28 @@ var hbhSrtcpLabels = []struct{ name, salt, key string }{
 	{"uplink", "uplink hbh srtcp salt", "uplink hbh srtcp key"},
 }
 
+// HbhKeyBytes returns the 30-byte hop-by-hop key from an <hbh_key> node's
+// content: the relay sends it as 40 characters of base64 (seen live
+// 2026-11-14), which is exactly 30 bytes; raw 30-byte content is taken as is.
+// It returns nil for anything else.
+func HbhKeyBytes(content []byte) []byte {
+	if len(content) == 30 {
+		return content
+	}
+	for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.URLEncoding, base64.RawStdEncoding, base64.RawURLEncoding} {
+		if raw, err := enc.DecodeString(string(content)); err == nil && len(raw) == 30 {
+			return raw
+		}
+	}
+	return nil
+}
+
 // HbhSrtcpReceiveCandidates derives every candidate keying for the relay's
-// hop-by-hop RTCP from a 30-byte <hbh_key>. It returns nil for any other length.
+// hop-by-hop RTCP from an <hbh_key> (raw 30 bytes or its base64). It returns
+// nil for anything else.
 func HbhSrtcpReceiveCandidates(hbhKey []byte) []HbhSrtcpVariant {
-	if len(hbhKey) != 30 {
+	hbhKey = HbhKeyBytes(hbhKey)
+	if hbhKey == nil {
 		return nil
 	}
 	var out []HbhSrtcpVariant

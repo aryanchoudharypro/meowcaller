@@ -911,23 +911,18 @@ func (e *engine) sendAccept(callID string, to, creator types.JID) {
 		return
 	}
 	isVideo := m.localVideo || m.remoteVideo
-	codec := m.codec
 	m.acceptPending = false
 	e.mu.Unlock()
 
-	// The answer states our own codec selection twice, and omitting either is what
-	// leaves a call connected but silent. <capability> is how the peer learns we do
-	// MLow at all — a missing blob reads as "unstated", so a peer that would have
-	// matched us never does. <voip_settings> is the directional field that selects
-	// the peer's DECODER; without it a standard-Opus answer still leaves the peer
-	// decoding our packets as MLow.
-	// Source of truth: https://github.com/oxidezap/whatsapp-rust/pull/1050
+	// The answer looks like an official client's whatever codec the call is on:
+	// the normal <capability> (MLow bit set) and no <voip_settings>. WhatsApp
+	// for Windows answers a standard-Opus call exactly so. An accept that
+	// carried <voip_settings> (whatsapp-rust #1050's standard-Opus answer) was
+	// dropped by the server on 2026-11-14: never acked, never relayed to our
+	// other devices, so the caller kept ringing until our phone rejected it.
+	// The codec is the call's voip_settings, which both ends get from the server.
 	acceptCapability := signaling.CapabilityOffer
 	var acceptVoipSettings []byte
-	if codec == AudioCodecOpus {
-		acceptCapability = signaling.CapabilityStandardOpusOffer
-		acceptVoipSettings = signaling.StandardOpusVoipSettings(false)
-	}
 	accept := signaling.BuildAccept(&signaling.AcceptParams{
 		CallID: callID, To: to, CallCreator: creator,
 		AudioRates:   []string{"16000"},

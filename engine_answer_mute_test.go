@@ -1,10 +1,12 @@
 package meowcaller
 
 import (
+	"bytes"
 	"context"
 	"sync"
 	"testing"
 
+	"github.com/purpshell/meowcaller/signaling"
 	"github.com/rs/zerolog"
 	"go.mau.fi/whatsmeow"
 	waBinary "go.mau.fi/whatsmeow/binary"
@@ -126,5 +128,35 @@ func TestPeerMuteV2DoesNotDoubleSendAccept(t *testing.T) {
 	defer mu.Unlock()
 	if len(sent) != 2 {
 		t.Fatalf("sent %d call nodes, want exactly 2 (own mute_v2 + accept from Answer, no extra accept from the peer's mute_v2)", len(sent))
+	}
+}
+
+// An answer on a standard-Opus call looks like WhatsApp for Windows' does: the
+// normal capability and no <voip_settings>. One that carried <voip_settings>
+// was silently dropped by the server, so the caller never heard it answered.
+func TestOpusCallAcceptLooksLikeAnOfficialClients(t *testing.T) {
+	eng, call := testEngineWithIncomingCall("CID")
+	eng.calls["CID"].codec = AudioCodecOpus
+	var sent []waBinary.Node
+	eng.sendCallNode = func(_ context.Context, node waBinary.Node) error {
+		sent = append(sent, node)
+		return nil
+	}
+	if err := call.Answer(); err != nil {
+		t.Fatalf("Answer: %v", err)
+	}
+	accept := sent[len(sent)-1].GetChildren()[0]
+	if accept.Tag != "accept" {
+		t.Fatalf("last node is %s, want accept", accept.Tag)
+	}
+	for _, child := range accept.GetChildren() {
+		if child.Tag == "voip_settings" {
+			t.Fatal("the accept carries <voip_settings>, which the server drops")
+		}
+		if child.Tag == "capability" {
+			if blob, _ := child.Content.([]byte); !bytes.Equal(blob, signaling.CapabilityOffer) {
+				t.Fatalf("capability %x, want the normal offer %x", blob, signaling.CapabilityOffer)
+			}
+		}
 	}
 }

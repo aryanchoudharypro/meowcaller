@@ -2,6 +2,7 @@ package srtp
 
 import (
 	"bytes"
+	"encoding/base64"
 	"testing"
 )
 
@@ -53,6 +54,14 @@ func TestHbhSrtcpReceiveCandidatesAreDistinctAndRoundTrip(t *testing.T) {
 		if ok && !bytes.Equal(plain, nack) {
 			t.Fatal("round trip changed the packet")
 		}
+	}
+	encoded := []byte(base64.StdEncoding.EncodeToString(hbhKey))
+	if len(encoded) != 40 {
+		t.Fatalf("base64 of the key is %d bytes", len(encoded))
+	}
+	fromBase64 := HbhSrtcpReceiveCandidates(encoded)
+	if len(fromBase64) != len(candidates) || fromBase64[0].Keys != candidates[0].Keys {
+		t.Fatal("the 40-character base64 <hbh_key> the relay sends did not give the same keys")
 	}
 	if HbhSrtcpReceiveCandidates(make([]byte, 16)) != nil {
 		t.Fatal("a key of the wrong length produced candidates")
