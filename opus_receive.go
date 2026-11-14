@@ -63,8 +63,11 @@ func (d *standardOpusDecoder) decodeAt(payload []byte, ts uint32) (pcm []float32
 	defer func() {
 		if recover() != nil {
 			pcm, lead, ok = nil, 0, false
+			// The aborted decoder is abandoned, not closed: the abort left its
+			// pseudo-stack mid-call, and freeing that through the port's
+			// shared allocator can break the decoders that come after it. It
+			// is a few kilobytes, once per bad packet.
 			if fresh, err := opus.NewDecoder(SampleRate, 1); err == nil {
-				_ = d.dec.Close()
 				d.dec = fresh
 			}
 			d.hasLast = false

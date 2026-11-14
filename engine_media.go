@@ -231,6 +231,9 @@ collect:
 	}
 	e.c.log.Info().Int("connected", len(chans)).Int("offered", len(targets)).Strs("relays", names).Msg("relay fanout established")
 	f := newRelayFanout(chans, allocs, names)
+	f.onElected = func(name string) {
+		e.c.log.Info().Str("relay_name", name).Msg("peer media now arrives from this relay; video goes to it alone")
+	}
 	if pending > 0 {
 		go func() {
 			for ; pending > 0; pending-- {
@@ -1198,6 +1201,32 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 	buf := make([]byte, 1500)
 	rtpDedup := newRtpReplayFilter()
 	var rtpIn, rtpSeen, unprotectFail, rtpInspect, vidIn, appDataIn, appDataUnprotectFail, videoUnprotectFail, videoFrameIn, videoSinkMissing, rtcpIn, rtcpAuthFail, groupForwardingInvalid, stunInspect, otherInspect uint64
+	// The relay's own RTCP (keyframe requests, NACKs and REMB for our uplink)
+	// is protected under keys from <hbh_key>, not the call key. Which of the
+	// derived keyings it uses is not settled; the first that authenticates
+	// is kept.
+	hbhCandidates := srtp.HbhSrtcpReceiveCandidates(rd.hbhKey)
+	hbhChosen := -1
+	var relayRTCPIn uint64
+	log.Info().Int("hbh_key_bytes", len(rd.hbhKey)).Int("keyings", len(hbhCandidates)).Msg("relay hop-by-hop RTCP keys")
+	unprotectRelayRTCP := func(senderSsrc uint32, pkt []byte) ([]byte, uint32, string, bool) {
+		if hbhChosen >= 0 {
+			if plain, index, ok := srtp.UnprotectSrtcp(&hbhCandidates[hbhChosen].Keys, senderSsrc, pkt); ok {
+				return plain, index, hbhCandidates[hbhChosen].Name, true
+			}
+		}
+		for i := range hbhCandidates {
+			if i == hbhChosen {
+				continue
+			}
+			if plain, index, ok := srtp.UnprotectSrtcp(&hbhCandidates[i].Keys, senderSsrc, pkt); ok {
+				hbhChosen = i
+				log.Info().Str("keying", hbhCandidates[i].Name).Uint32("ssrc", senderSsrc).Msg("relay hop-by-hop RTCP authenticated")
+				return plain, index, hbhCandidates[i].Name, true
+			}
+		}
+		return nil, 0, "", false
+	}
 	mediaStart := time.Now()
 	monoMs := func() uint64 { return uint64(time.Since(mediaStart).Milliseconds()) }
 	audioLatest := make(map[uint32]uint32)
@@ -1498,7 +1527,14 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 				continue
 			}
 			plain, index, ok := audioReceivers.UnprotectSRTCP(senderSsrc, pkt)
+			relayKeying := ""
 			if !ok {
+				plain, index, relayKeying, ok = unprotectRelayRTCP(senderSsrc, pkt)
+			}
+			if !ok {
+				if call != nil {
+					call.stats.relayRTCPRejected.Add(1)
+				}
 				if rtcpAuthFail++; rtcpAuthFail == 1 {
 					log.Warn().Uint32("ssrc", senderSsrc).Msg("peer SRTCP failed authentication")
 				}
@@ -1507,7 +1543,17 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 				})
 				continue
 			}
-			if rtcpIn++; rtcpIn == 1 {
+			feedback := rtp.ParseRtcpFeedback(plain)
+			if relayKeying != "" {
+				if call != nil {
+					call.stats.relayRTCPReceived.Add(1)
+				}
+				if relayRTCPIn++; relayRTCPIn <= 20 || relayRTCPIn%200 == 0 {
+					log.Info().Uint64("count", relayRTCPIn).Uint32("ssrc", senderSsrc).Str("keying", relayKeying).
+						Strs("types", feedback.Types).Int("plain_bytes", len(plain)).Str("plain_hex", hex.EncodeToString(plain)).
+						Msg("relay RTCP")
+				}
+			} else if rtcpIn++; rtcpIn == 1 {
 				log.Info().Uint32("ssrc", senderSsrc).Uint32("index", index).Msg("first authenticated peer SRTCP received")
 			}
 			keyframe := rtp.RtcpRequestsKeyframe(plain, videoSelfSsrc)
@@ -1516,18 +1562,34 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 				if call != nil {
 					call.requestVideoKeyframe()
 				}
-				log.Debug().Uint32("video_ssrc", videoSelfSsrc).Msg("peer requested a video keyframe")
+				log.Debug().Uint32("video_ssrc", videoSelfSsrc).Bool("from_relay", relayKeying != "").Msg("peer requested a video keyframe")
 			}
 			if ssender != nil && rtp.RtcpRequestsKeyframe(plain, ssender.ssrc) {
 				ssender.requestKeyframe()
 				if call != nil {
 					call.requestScreenKeyframe()
 				}
-				log.Debug().Uint32("screen_ssrc", ssender.ssrc).Msg("peer requested a screen keyframe")
+				log.Debug().Uint32("screen_ssrc", ssender.ssrc).Bool("from_relay", relayKeying != "").Msg("peer requested a screen keyframe")
+			}
+			resent := 0
+			if seqs := feedback.Nacked[videoSelfSsrc]; len(seqs) > 0 {
+				resent += vsender.resend(seqs)
+			}
+			if ssender != nil {
+				if seqs := feedback.Nacked[ssender.ssrc]; len(seqs) > 0 {
+					resent += ssender.resend(seqs)
+				}
 			}
 			if call != nil {
+				call.stats.videoResent.Add(uint32(resent))
+				if feedback.RembBps > 0 {
+					call.stats.relayBitrateBps.Store(feedback.RembBps)
+				}
 				if fraction, ok := rtp.ParseReceptionFractionLost(plain, ssrc); ok {
 					call.stats.observePeerLoss(fraction)
+				}
+				if fraction, ok := rtp.ParseReceptionFractionLost(plain, videoSelfSsrc); ok {
+					call.stats.observePeerVideoLoss(fraction)
 				}
 			}
 			if reportSsrc, ntpSeconds, ntpFraction, ok := rtp.ParseSenderReportTiming(plain); ok {
@@ -1913,6 +1975,8 @@ type relayMediaSender interface {
 }
 
 type videoSender struct {
+	// sendMu keeps whole frames in order; mu guards the fields below.
+	sendMu           sync.Mutex
 	mu               sync.Mutex
 	pipe             *MediaPipeline
 	stream           *rtp.VideoRtpStream
@@ -1927,6 +1991,27 @@ type videoSender struct {
 	keyframeRequired bool
 	log              zerolog.Logger
 	diag             *diag.Recorder
+	// history holds the last packets sent, by sequence number, so a NACK can
+	// be answered with the identical protected packet.
+	history     [videoHistorySize][]byte
+	historySeq  [videoHistorySize]uint16
+	resent      uint64
+	resendCount uint64
+}
+
+// videoHistorySize is how many sent video packets are kept for retransmission:
+// about two seconds of a 1.5 Mbit/s stream.
+const videoHistorySize = 512
+
+// videoPaceBurst is how many packets of one frame leave back to back before the
+// sender yields; a keyframe is otherwise one burst of dozens of packets that a
+// home uplink or the relay drops the tail of.
+const videoPaceBurst = 4
+
+// electedSender is a relay channel that can carry a packet over the relay the
+// peer elected only.
+type electedSender interface {
+	SendElected(data []byte) (int, error)
 }
 
 type mediaSrtcpSender struct {
@@ -2151,44 +2236,111 @@ func (vs *videoSender) send(au []byte, duration time.Duration) {
 	if vs == nil || len(au) == 0 {
 		return
 	}
+	// Frames are sent one at a time, in order; vs.mu is only held while a
+	// frame is packetized and between packets, never across the pacing sleep,
+	// so keyframe requests and NACKs from the receive loop never wait on it.
+	vs.sendMu.Lock()
+	defer vs.sendMu.Unlock()
 	vs.mu.Lock()
-	defer vs.mu.Unlock()
 	if vs.ch == nil {
+		vs.mu.Unlock()
 		return
 	}
 	packets := vs.protectAccessUnitLocked(au, duration)
+	sendOne := vs.ch.Send
+	if elected, ok := vs.ch.(electedSender); ok {
+		sendOne = elected.SendElected
+	}
+	frame := vs.frame
+	vs.mu.Unlock()
 	if len(packets) == 0 {
 		return
 	}
+	// Spread a large frame over the first half of its own duration so the
+	// next frame never queues behind it.
+	gap := time.Duration(0)
+	if bursts := (len(packets) + videoPaceBurst - 1) / videoPaceBurst; bursts > 1 && duration > 0 {
+		gap = duration / 2 / time.Duration(bursts)
+	}
 	sent := 0
 	wireBytes := 0
-	for _, pkt := range packets {
-		if _, err := vs.ch.Send(pkt); err != nil {
-			return
+	for i, pkt := range packets {
+		if gap > 0 && i > 0 && i%videoPaceBurst == 0 {
+			time.Sleep(gap)
 		}
+		if _, err := sendOne(pkt); err != nil {
+			break
+		}
+		vs.mu.Lock()
+		vs.remember(pkt)
+		vs.mu.Unlock()
 		sent++
 		wireBytes += len(pkt)
 	}
-	frame := vs.frame
-	if sent > 0 {
-		vs.frame++
-		if frame < 10 || frame%30 == 0 {
-			vs.diag.Emit("video_out", map[string]any{
-				"event": "frame", "call_id": vs.callID, "frame": frame,
-				"ssrc": vs.ssrc, "rtp_ts": vs.pipe.SenderStats().RtpTimestamp,
-				"packets": sent, "access_unit_bytes": len(au),
-				"wire_bytes": wireBytes, "duration_ms": duration.Milliseconds(),
-				"duration_samples": videoRtpDurationSamples(duration),
-			})
-		}
+	if sent == 0 {
+		return
 	}
-	if sent > 0 && !vs.logged {
-		vs.logged = true
+	vs.mu.Lock()
+	vs.frame++
+	firstLog := !vs.logged
+	vs.logged = true
+	vs.mu.Unlock()
+	if frame < 10 || frame%30 == 0 {
+		vs.diag.Emit("video_out", map[string]any{
+			"event": "frame", "call_id": vs.callID, "frame": frame,
+			"ssrc": vs.ssrc, "rtp_ts": vs.pipe.SenderStats().RtpTimestamp,
+			"packets": sent, "access_unit_bytes": len(au),
+			"wire_bytes": wireBytes, "duration_ms": duration.Milliseconds(),
+			"duration_samples": videoRtpDurationSamples(duration),
+		})
+	}
+	if firstLog {
 		vs.log.Info().
 			Int("packets", sent).
 			Uint32("ssrc", vs.ssrc).
 			Msg("first video RTP sent to relay, outbound video flowing")
 	}
+}
+
+// remember keeps a sent packet for retransmission. The caller holds vs.mu.
+func (vs *videoSender) remember(pkt []byte) {
+	if len(pkt) < 4 {
+		return
+	}
+	seq := uint16(pkt[2])<<8 | uint16(pkt[3])
+	slot := int(seq) % videoHistorySize
+	vs.history[slot] = pkt
+	vs.historySeq[slot] = seq
+}
+
+// resend answers a NACK: each still-held packet is sent again unchanged. It
+// returns how many were.
+func (vs *videoSender) resend(seqs []uint16) int {
+	if vs == nil {
+		return 0
+	}
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+	if vs.ch == nil {
+		return 0
+	}
+	sendOne := vs.ch.Send
+	if elected, ok := vs.ch.(electedSender); ok {
+		sendOne = elected.SendElected
+	}
+	n := 0
+	for _, seq := range seqs {
+		slot := int(seq) % videoHistorySize
+		if vs.history[slot] == nil || vs.historySeq[slot] != seq {
+			continue
+		}
+		if _, err := sendOne(vs.history[slot]); err == nil {
+			n++
+		}
+	}
+	vs.resendCount++
+	vs.resent += uint64(n)
+	return n
 }
 
 // rmsFloat32 returns the root-mean-square level of a PCM frame, a cheap loudness

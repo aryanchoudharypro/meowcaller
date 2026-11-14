@@ -1,6 +1,7 @@
 package meowcaller
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/binary"
@@ -2052,6 +2053,9 @@ type relayData struct {
 	relayTokens   [][]byte // indexed <token id=…>
 	endpoints     []relayEndpoint
 	peerJID       types.JID
+	// hbhKey is the raw <hbh_key>: the key the relay's own RTCP to us is
+	// protected under (see srtp.HbhSrtcpReceiveCandidates).
+	hbhKey []byte
 }
 
 func nodeBytes(n *waBinary.Node) []byte {
@@ -2161,6 +2165,9 @@ func parseRelayData(node *waBinary.Node) *relayData {
 		rd.relayKeyASCII = nodeBytes(key)
 	}
 	rd.relayTokens = parseIndexedTokens(node, "token")
+	if hbh := childByTag(node, "hbh_key"); hbh != nil {
+		rd.hbhKey = bytes.Clone(nodeBytes(hbh))
+	}
 
 	kids := node.GetChildren()
 	peerPID := node.AttrGetter().String("peer_pid")

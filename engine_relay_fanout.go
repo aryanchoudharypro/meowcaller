@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/purpshell/meowcaller/relay"
 )
@@ -27,6 +28,14 @@ type relayFanout struct {
 	packets   chan []byte
 	done      chan struct{}
 	closeOnce sync.Once
+
+	// rxMu guards lastMediaAt: when each relay last delivered the peer's
+	// RTP, which is how the relay the peer elected shows itself.
+	rxMu        sync.Mutex
+	lastMediaAt map[*relay.RelayMediaChannel]time.Time
+	elected     string
+	// onElected, when set before media flows, hears each change of elected relay.
+	onElected func(name string)
 
 	mu     sync.Mutex
 	closed bool
@@ -71,6 +80,14 @@ func (f *relayFanout) readLoop(ch *relay.RelayMediaChannel) {
 		}
 		pkt := make([]byte, n)
 		copy(pkt, buf[:n])
+		if isRelayRTP(pkt) {
+			f.rxMu.Lock()
+			if f.lastMediaAt == nil {
+				f.lastMediaAt = make(map[*relay.RelayMediaChannel]time.Time)
+			}
+			f.lastMediaAt[ch] = time.Now()
+			f.rxMu.Unlock()
+		}
 		select {
 		case f.packets <- pkt:
 		case <-f.done:
@@ -119,6 +136,57 @@ func (f *relayFanout) Send(data []byte) (int, error) {
 		return 0, lastErr
 	}
 	return len(data), nil
+}
+
+// electedRelayFreshness is how recently a relay must have delivered the peer's
+// media to count as the relay the peer elected.
+const electedRelayFreshness = 2 * time.Second
+
+// isRelayRTP is relay.ClassifyRelayPacket's RTP case without its per-packet
+// trace logging.
+func isRelayRTP(pkt []byte) bool {
+	return len(pkt) >= 2 && pkt[0]>>6 == 2 && (pkt[1] < 192 || pkt[1] > 223)
+}
+
+// SendElected sends one packet only to the relay the peer's media currently
+// arrives from, and to every relay when none has delivered any lately.
+//
+// WhatsApp's clients elect one relay and carry media over it alone (WA Web's
+// engine sends the others only probes: send_standalone_warp_pr_to_non_elected_relay,
+// enable_implicit_relay_election_on_rx_pkts). Broadcasting heavy streams like
+// video to all three triples the uplink, and a home connection that cannot
+// carry that loses audio and video alike.
+func (f *relayFanout) SendElected(data []byte) (int, error) {
+	f.mu.Lock()
+	if f.closed {
+		f.mu.Unlock()
+		return 0, errFanoutClosed
+	}
+	chans, names := f.chans, f.names
+	f.mu.Unlock()
+	if len(chans) > 1 {
+		now := time.Now()
+		best, bestAt := -1, time.Time{}
+		f.rxMu.Lock()
+		for i, ch := range chans {
+			if at, ok := f.lastMediaAt[ch]; ok && now.Sub(at) <= electedRelayFreshness && at.After(bestAt) {
+				best, bestAt = i, at
+			}
+		}
+		changed := ""
+		if best >= 0 && best < len(names) && f.elected != names[best] {
+			f.elected = names[best]
+			changed = names[best]
+		}
+		f.rxMu.Unlock()
+		if changed != "" && f.onElected != nil {
+			f.onElected(changed)
+		}
+		if best >= 0 {
+			return chans[best].Send(data)
+		}
+	}
+	return f.Send(data)
 }
 
 // Recv pops the next packet from any relay into buf, blocking like the

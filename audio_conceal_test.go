@@ -60,8 +60,10 @@ func TestStandardOpusDecoderSurvivesAPacketThatTripsLibopus(t *testing.T) {
 	dec.decodeAt(junk, 1000)
 	dec.decodeAt(junk, 1000+2*960) // tripped an assertion before the guard
 	frames := loadFixtureFrames(t, "testdata/opus_silk_wb_60ms_frames.json")
-	if pcm, _, ok := dec.decodeAt(frames[3], 50000); !ok || len(pcm) != 960 {
-		t.Fatalf("the decoder did not recover: ok=%v len=%d", ok, len(pcm))
+	if pcm, _, ok := dec.decodeAt(frames[1], 50000); !ok || len(pcm) != 960 {
+		buf := make([]float32, 2000)
+		n, derr := dec.dec.DecodeF32(frames[1], buf, 960, false)
+		t.Fatalf("the decoder did not recover: ok=%v len=%d (direct retry n=%d err=%v)", ok, len(pcm), n, derr)
 	}
 }
 

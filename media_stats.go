@@ -43,6 +43,17 @@ type MediaStats struct {
 	// feeds its encoder's packet-loss setting, the way WhatsApp's own stack
 	// does.
 	PeerReportedLossPercent uint32
+	// PeerReportedVideoLossPercent is the same for our outbound video
+	// (smoothed, 0-100), for a sender to size its video bitrate by.
+	PeerReportedVideoLossPercent uint32
+	// RelayEstimatedBitrateBps is the latest bandwidth the relay's REMB says
+	// our uplink carries, 0 until the relay has sent one.
+	RelayEstimatedBitrateBps uint64
+	// RelayRTCPReceived counts the relay's own hop-by-hop RTCP packets that
+	// authenticated; RelayRTCPRejected those that matched no key.
+	RelayRTCPReceived, RelayRTCPRejected uint32
+	// VideoPacketsResent counts video packets sent again on a NACK.
+	VideoPacketsResent uint32
 	// CarriedAudioFrames is audio packets that arrived inside the peer's video
 	// packets, which WhatsApp does in a video call, instead of on their own.
 	CarriedAudioFrames uint32
@@ -96,6 +107,8 @@ type mediaStatsCounters struct {
 	rtpReceived, payloadUnexpected, unprotectFailed, framesDecoded, framesSent atomic.Uint32
 	framesConcealed, offPointDropped, inactiveOrSID, standardOpus              atomic.Uint32
 	peerLossPercent                                                            atomic.Uint32
+	peerVideoLossPercent, relayRTCPReceived, relayRTCPRejected, videoResent    atomic.Uint32
+	relayBitrateBps                                                            atomic.Uint64
 	carriedAudio, videoRepairs, videoRecovered, videoGapsSkipped               atomic.Uint32
 	videoPacketsSkipped, videoPacketsLate, videoParityMismatched               atomic.Uint32
 	videoRecoveredRejected                                                     atomic.Uint32
@@ -120,27 +133,38 @@ func (s *mediaStatsCounters) observePeerLoss(fraction uint8) {
 	s.peerLossPercent.Store((old + now + 1) / 2)
 }
 
+func (s *mediaStatsCounters) observePeerVideoLoss(fraction uint8) {
+	now := (uint32(fraction)*100 + 255) / 256
+	old := s.peerVideoLossPercent.Load()
+	s.peerVideoLossPercent.Store((old + now + 1) / 2)
+}
+
 func (s *mediaStatsCounters) snapshot() MediaStats {
 	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/3987f7c809a0b1ca3296a0e9a4fbb7ce96ea3181/wacore/src/voip_control/media_stats.rs#L36-L55
 	return MediaStats{
-		RTPReceived:              s.rtpReceived.Load(),
-		RTPPayloadTypeUnexpected: s.payloadUnexpected.Load(),
-		SRTPUnprotectFailed:      s.unprotectFailed.Load(),
-		AudioFramesDecoded:       s.framesDecoded.Load(),
-		AudioFramesConcealed:     s.framesConcealed.Load(),
-		MlowOffPointDropped:      s.offPointDropped.Load(),
-		MlowInactiveOrSID:        s.inactiveOrSID.Load(),
-		StandardOpusFrames:       s.standardOpus.Load(),
-		AudioFramesSent:          s.framesSent.Load(),
-		PeerReportedLossPercent:  s.peerLossPercent.Load(),
-		CarriedAudioFrames:       s.carriedAudio.Load(),
-		VideoRepairsReceived:     s.videoRepairs.Load(),
-		VideoPacketsRecovered:    s.videoRecovered.Load(),
-		VideoGapsSkipped:         s.videoGapsSkipped.Load(),
-		VideoPacketsSkipped:      s.videoPacketsSkipped.Load(),
-		VideoPacketsLate:         s.videoPacketsLate.Load(),
-		VideoParityMismatched:    s.videoParityMismatched.Load(),
-		VideoRecoveredRejected:   s.videoRecoveredRejected.Load(),
+		RTPReceived:                  s.rtpReceived.Load(),
+		RTPPayloadTypeUnexpected:     s.payloadUnexpected.Load(),
+		SRTPUnprotectFailed:          s.unprotectFailed.Load(),
+		AudioFramesDecoded:           s.framesDecoded.Load(),
+		AudioFramesConcealed:         s.framesConcealed.Load(),
+		MlowOffPointDropped:          s.offPointDropped.Load(),
+		MlowInactiveOrSID:            s.inactiveOrSID.Load(),
+		StandardOpusFrames:           s.standardOpus.Load(),
+		AudioFramesSent:              s.framesSent.Load(),
+		PeerReportedLossPercent:      s.peerLossPercent.Load(),
+		PeerReportedVideoLossPercent: s.peerVideoLossPercent.Load(),
+		RelayEstimatedBitrateBps:     s.relayBitrateBps.Load(),
+		RelayRTCPReceived:            s.relayRTCPReceived.Load(),
+		RelayRTCPRejected:            s.relayRTCPRejected.Load(),
+		VideoPacketsResent:           s.videoResent.Load(),
+		CarriedAudioFrames:           s.carriedAudio.Load(),
+		VideoRepairsReceived:         s.videoRepairs.Load(),
+		VideoPacketsRecovered:        s.videoRecovered.Load(),
+		VideoGapsSkipped:             s.videoGapsSkipped.Load(),
+		VideoPacketsSkipped:          s.videoPacketsSkipped.Load(),
+		VideoPacketsLate:             s.videoPacketsLate.Load(),
+		VideoParityMismatched:        s.videoParityMismatched.Load(),
+		VideoRecoveredRejected:       s.videoRecoveredRejected.Load(),
 	}
 }
 
