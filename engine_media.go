@@ -753,6 +753,11 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 	// all; the relay answers allocate-success + pong and bridges the peer's media.
 	// Binding-requests instead flip the relay into ICE-consent mode and the bridge never
 	// forms.
+	health := newNetHealthMonitor(0, 0, 0)
+	if call != nil {
+		health = newNetHealthMonitor(int(call.netHealthSamples.Load()), int(call.netHealthMaxBanners.Load()),
+			int(call.netHealthMaxSounds.Load()))
+	}
 	go func() {
 		t := time.NewTicker(time.Second)
 		defer t.Stop()
@@ -856,7 +861,23 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 					log.Debug().Err(err).Str("call_id", callID).Msg("keepalive allocate failed")
 				}
 			}
+			now := time.Now()
 			_, _ = ch.Send(ping[:])
+			health.pingSent(tx, now)
+			if call != nil && !call.netHealthOff.Load() && !call.Reconnecting() {
+				peerLoss := int(call.stats.peerLossPercent.Load())
+				if change, ok := health.evaluate(now, peerLoss, !groupMode.Load()); ok {
+					log.Info().Str("call_id", callID).Str("quality", change.Quality.String()).
+						Bool("peer_side", change.PeerSide).Bool("sound_alert", change.SoundAlert).
+						Int("ping_loss_percent", change.PingLossPercent).Dur("round_trip", change.RoundTrip).
+						Int("inbound_loss_percent", change.InboundLossPercent).
+						Int("peer_reported_loss_percent", change.PeerReportedLossPercent).
+						Msg("network health changed")
+					if fn := call.onNetworkHealthFn(); fn != nil {
+						go fn(change)
+					}
+				}
+			}
 			tickCount++
 			e.c.diag.Emit("stun", map[string]any{
 				"event": "keepalive", "tick": tickCount,
@@ -1153,6 +1174,9 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 					videoReception.Retain(audioReceivers.ActiveVideoSSRCs())
 				}
 				audioReports := audioReception.Reports(nowMs)
+				if len(audioReports) > 0 && !groupMode.Load() {
+					health.observeInbound(audioReports[0].FractionLost)
+				}
 				_, err := sendMediaSrtcpReceptionReports(
 					audioRtcp,
 					txPipe.SenderStats(),
@@ -1645,6 +1669,9 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 				log.Debug().Int("packet_bytes", n).Bool("group_wrapped", groupWrapped).
 					Bool("is_stun", isStun).Uint16("stun_type", mt).
 					Msg("relay STUN-classified packet")
+			}
+			if isStun && mt == stun.MsgWhatsappPong {
+				health.pong(pkt, time.Now())
 			}
 			if isStun && mt == stun.MsgBindingRequest {
 				resp, answered, err := allocateState.SendBindingSuccess(pkt, func(packet []byte) error {

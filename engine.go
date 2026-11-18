@@ -1411,6 +1411,10 @@ func (e *engine) applyVoipSettingsCodec(m *engineCall, node *waBinary.Node, call
 				m.call.dtx.Store(vs.DTX)
 				m.call.dtxStartMs.Store(int32(vs.DTXStartMs))
 				m.call.audioResends.Store(int32(vs.MaxAudioResends))
+				m.call.netHealthOff.Store(vs.NetHealthOff)
+				m.call.netHealthSamples.Store(int32(vs.NetHealthSamples))
+				m.call.netHealthMaxBanners.Store(int32(vs.NetHealthMaxBanners))
+				m.call.netHealthMaxSounds.Store(int32(vs.NetHealthMaxSounds))
 			}
 			if vs.Enable48kHzRTPClock && m.call != nil {
 				m.call.peerClock48k.Store(true)

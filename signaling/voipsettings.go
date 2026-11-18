@@ -58,6 +58,14 @@ type VoipSettings struct {
 	// MaxAudioResends mirrors options.max_rtp_audio_packet_resends: how often
 	// one audio packet is sent again on NACKs; 0 if absent.
 	MaxAudioResends int
+	// The network health monitor's settings: options.enable_network_health_monitor
+	// (NetHealthOff when present and off), net_health_ping_loss_sample_size,
+	// net_health_max_sent_banner and net_health_max_sound_alert_audio; 0 if
+	// absent.
+	NetHealthOff        bool
+	NetHealthSamples    int
+	NetHealthMaxBanners int
+	NetHealthMaxSounds  int
 }
 
 // MaxAudioRate is the highest audio sampling rate these settings let a call
@@ -149,10 +157,14 @@ func ParseVoipSettings(raw []byte, log ...zerolog.Logger) (*VoipSettings, error)
 			DTX           flexString `json:"dtx"`
 		} `json:"rc"`
 		Options struct {
-			SamplingRateOverrides flexString `json:"enable_sampling_rate_overrides"`
-			Enable48kHzRTPClock   flexString `json:"enable_48khz_rtp_clock"`
-			DTXStartMs            flexString `json:"enable_additional_dtx_frames_at_call_start_ms"`
-			MaxAudioResends       flexString `json:"max_rtp_audio_packet_resends"`
+			SamplingRateOverrides flexString  `json:"enable_sampling_rate_overrides"`
+			Enable48kHzRTPClock   flexString  `json:"enable_48khz_rtp_clock"`
+			DTXStartMs            flexString  `json:"enable_additional_dtx_frames_at_call_start_ms"`
+			MaxAudioResends       flexString  `json:"max_rtp_audio_packet_resends"`
+			NetHealthMonitor      *flexString `json:"enable_network_health_monitor"`
+			NetHealthSamples      flexString  `json:"net_health_ping_loss_sample_size"`
+			NetHealthMaxBanners   flexString  `json:"net_health_max_sent_banner"`
+			NetHealthMaxSounds    flexString  `json:"net_health_max_sound_alert_audio"`
 		} `json:"options"`
 		AudioInit struct {
 			DriverSamplingRateMax flexString `json:"driver_sampling_rate_max"`
@@ -183,6 +195,10 @@ func ParseVoipSettings(raw []byte, log ...zerolog.Logger) (*VoipSettings, error)
 		DTX:                    settingIsOn(string(doc.RC.DTX)),
 		DTXStartMs:             atoiOrZero(string(doc.Options.DTXStartMs)),
 		MaxAudioResends:        atoiOrZero(string(doc.Options.MaxAudioResends)),
+		NetHealthOff:           doc.Options.NetHealthMonitor != nil && !settingIsOn(string(*doc.Options.NetHealthMonitor)),
+		NetHealthSamples:       atoiOrZero(string(doc.Options.NetHealthSamples)),
+		NetHealthMaxBanners:    atoiOrZero(string(doc.Options.NetHealthMaxBanners)),
+		NetHealthMaxSounds:     atoiOrZero(string(doc.Options.NetHealthMaxSounds)),
 	}
 	lg.Debug().
 		Bool("use_mlow_codec_v1", vs.UseMlowCodecV1).

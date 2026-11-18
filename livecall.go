@@ -49,9 +49,15 @@ type Call struct {
 	dtx        atomic.Bool
 	dtxStartMs atomic.Int32
 	// audioResends is options.max_rtp_audio_packet_resends (0 = default).
-	audioResends             atomic.Int32
-	peerSendsOpus            atomic.Bool
-	onAudioHealth            func(AudioHealth)
+	audioResends    atomic.Int32
+	peerSendsOpus   atomic.Bool
+	onAudioHealth   func(AudioHealth)
+	onNetworkHealth func(NetworkHealth)
+	// netHealth* are the server's options.net_health_* settings.
+	netHealthOff             atomic.Bool
+	netHealthSamples         atomic.Int32
+	netHealthMaxBanners      atomic.Int32
+	netHealthMaxSounds       atomic.Int32
 	videoSink                VideoSink
 	onVideoState             func(VideoState)
 	onVideoKeyframeRequest   func()

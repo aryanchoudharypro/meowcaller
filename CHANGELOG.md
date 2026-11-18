@@ -7,6 +7,12 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### engine — network health (poor connection) — `implemented`
+
+- `Call.OnNetworkHealth` reports when the call's network turns poor or very poor and when it recovers, like WhatsApp's "Poor connection" banner. It is judged once a second from the relay's answers (0x0802) to our keepalive pings (lost pings over the last `net_health_ping_loss_sample_size` and their round trip), the audio the peer reports losing, and, on a 1:1 call, the peer's audio lost on the way to us while our pings are fine (`PeerSide`: their connection is the poor one). A worse verdict must hold 3 s, a better one 6 s. At most `net_health_max_sent_banner` poor turns are reported per call, and the first carries `SoundAlert` (`net_health_max_sound_alert_audio`, 1). Off when `enable_network_health_monitor` is off, and while reconnecting. Ping loss counts only once a relay has answered a ping.
+- ASSUMPTION: the thresholds (20%/50% ping loss, 500 ms/1 s round trip, 15%/35% inbound loss, 20% reported loss) are ours; WA's packed `net_health_max_ping_*` values were not decoded.
+- Unit tests only; NOT VALIDATED live.
+
 ### audio — answering NACKs for our audio — `implemented`
 
 - Our last 64 protected audio packets (about four seconds) are kept by sequence number. A generic NACK for our audio SSRC, from the peer or the relay, is answered with the identical packets, each at most `options.max_rtp_audio_packet_resends` times (3 when absent; 3 in every blob of the user's logs). `MediaStats.AudioPacketsResent` counts them.
