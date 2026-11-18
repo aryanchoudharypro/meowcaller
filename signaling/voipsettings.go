@@ -55,6 +55,9 @@ type VoipSettings struct {
 	// DTXStartMs mirrors options.enable_additional_dtx_frames_at_call_start_ms:
 	// how long after media starts silent frames are still sent.
 	DTXStartMs int
+	// MaxAudioResends mirrors options.max_rtp_audio_packet_resends: how often
+	// one audio packet is sent again on NACKs; 0 if absent.
+	MaxAudioResends int
 }
 
 // MaxAudioRate is the highest audio sampling rate these settings let a call
@@ -149,6 +152,7 @@ func ParseVoipSettings(raw []byte, log ...zerolog.Logger) (*VoipSettings, error)
 			SamplingRateOverrides flexString `json:"enable_sampling_rate_overrides"`
 			Enable48kHzRTPClock   flexString `json:"enable_48khz_rtp_clock"`
 			DTXStartMs            flexString `json:"enable_additional_dtx_frames_at_call_start_ms"`
+			MaxAudioResends       flexString `json:"max_rtp_audio_packet_resends"`
 		} `json:"options"`
 		AudioInit struct {
 			DriverSamplingRateMax flexString `json:"driver_sampling_rate_max"`
@@ -178,6 +182,7 @@ func ParseVoipSettings(raw []byte, log ...zerolog.Logger) (*VoipSettings, error)
 		OpusMaxBandwidth:       atoiOrZero(string(doc.Encode.OpusMaxBandwidth)),
 		DTX:                    settingIsOn(string(doc.RC.DTX)),
 		DTXStartMs:             atoiOrZero(string(doc.Options.DTXStartMs)),
+		MaxAudioResends:        atoiOrZero(string(doc.Options.MaxAudioResends)),
 	}
 	lg.Debug().
 		Bool("use_mlow_codec_v1", vs.UseMlowCodecV1).

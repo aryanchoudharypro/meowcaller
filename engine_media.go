@@ -877,6 +877,7 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 	// bridge the peer's media until it sees our stream. So we send silence frames until the
 	// Player has real audio (nextFrame() == nil means send silence).
 	frameInterval := time.Duration(FrameSamples) * time.Second / SampleRate
+	var audioHistory audioResendHistory
 	go func() {
 		silence := make([]float32, FrameSamples)
 		ticker := time.NewTicker(frameInterval)
@@ -941,6 +942,7 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 				// Every relay is down; frames resume once one is redialed.
 				continue
 			}
+			audioHistory.remember(packet)
 			if call != nil {
 				call.stats.framesSent.Add(1)
 			}
@@ -1597,6 +1599,13 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 					call.requestScreenKeyframe()
 				}
 				log.Debug().Uint32("screen_ssrc", ssender.ssrc).Bool("from_relay", relayKeying != "").Msg("peer requested a screen keyframe")
+			}
+			if seqs := feedback.Nacked[ssrc]; len(seqs) > 0 {
+				n := audioHistory.resend(seqs, int(call.maxAudioResends()), ch.Send)
+				if call != nil {
+					call.stats.audioResent.Add(uint32(n))
+				}
+				log.Trace().Int("nacked", len(seqs)).Int("resent", n).Bool("from_relay", relayKeying != "").Msg("audio NACK answered")
 			}
 			resent := 0
 			if seqs := feedback.Nacked[videoSelfSsrc]; len(seqs) > 0 {

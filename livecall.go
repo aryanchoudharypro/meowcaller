@@ -46,8 +46,10 @@ type Call struct {
 	peerClock48k atomic.Bool
 	// dtx and dtxStartMs are the server's rc.dtx and the time silent frames
 	// are still sent after media starts.
-	dtx                      atomic.Bool
-	dtxStartMs               atomic.Int32
+	dtx        atomic.Bool
+	dtxStartMs atomic.Int32
+	// audioResends is options.max_rtp_audio_packet_resends (0 = default).
+	audioResends             atomic.Int32
 	peerSendsOpus            atomic.Bool
 	onAudioHealth            func(AudioHealth)
 	videoSink                VideoSink
@@ -938,6 +940,14 @@ func (c *Call) SetMuted(muted bool) error {
 // call leaves out the frames it marks as silence, as the shipped clients do.
 func (c *Call) DTX() bool {
 	return c != nil && c.dtx.Load()
+}
+
+// maxAudioResends is how often one of our audio packets is sent again at most.
+func (c *Call) maxAudioResends() int32 {
+	if c == nil {
+		return 0
+	}
+	return c.audioResends.Load()
 }
 
 func (c *Call) AudioRate() int {

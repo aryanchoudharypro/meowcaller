@@ -40,6 +40,8 @@ type MediaStats struct {
 	AudioFramesSent uint32
 	// AudioFramesSkippedDTX is outbound frames left out as DTX silence.
 	AudioFramesSkippedDTX uint32
+	// AudioPacketsResent counts our audio packets sent again on a NACK.
+	AudioPacketsResent uint32
 	// PeerReportedLossPercent is how much of our outbound audio the peer's
 	// RTCP reports say never arrived (smoothed, 0-100). It is what a sender
 	// feeds its encoder's packet-loss setting, the way WhatsApp's own stack
@@ -113,7 +115,7 @@ type mediaStatsCounters struct {
 	relayBitrateBps                                                            atomic.Uint64
 	carriedAudio, videoRepairs, videoRecovered, videoGapsSkipped               atomic.Uint32
 	videoPacketsSkipped, videoPacketsLate, videoParityMismatched               atomic.Uint32
-	videoRecoveredRejected, dtxSkipped                                         atomic.Uint32
+	videoRecoveredRejected, dtxSkipped, audioResent                            atomic.Uint32
 }
 
 // foldVideoFec adds what inbound video FEC did since the last call.
@@ -154,6 +156,7 @@ func (s *mediaStatsCounters) snapshot() MediaStats {
 		StandardOpusFrames:           s.standardOpus.Load(),
 		AudioFramesSent:              s.framesSent.Load(),
 		AudioFramesSkippedDTX:        s.dtxSkipped.Load(),
+		AudioPacketsResent:           s.audioResent.Load(),
 		PeerReportedLossPercent:      s.peerLossPercent.Load(),
 		PeerReportedVideoLossPercent: s.peerVideoLossPercent.Load(),
 		RelayEstimatedBitrateBps:     s.relayBitrateBps.Load(),

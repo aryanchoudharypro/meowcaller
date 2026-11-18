@@ -7,6 +7,12 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### audio — answering NACKs for our audio — `implemented`
+
+- Our last 64 protected audio packets (about four seconds) are kept by sequence number. A generic NACK for our audio SSRC, from the peer or the relay, is answered with the identical packets, each at most `options.max_rtp_audio_packet_resends` times (3 when absent; 3 in every blob of the user's logs). `MediaStats.AudioPacketsResent` counts them.
+- We do not ask for the peer's lost audio: the receiving playout rebuilds a loss at once from the next packet's in-band FEC and concealment rather than waiting a round trip for a resend, which would add delay to every call.
+- Unit tests only; NOT VALIDATED live.
+
 ### audio — DTX send — `implemented`
 
 - When the server's `<voip_settings>` carry `rc.dtx` (every blob in the user's logs has `"1"`), `Call.DTX` reports it and a source implementing the new `AudioDTXListener` is told, so its Opus encoder runs with DTX on. A frame it encodes as DTX silence (at most two bytes) is not sent: the RTP timestamp moves on and the sequence number does not, which is what a shipped Android peer does. For the first `options.enable_additional_dtx_frames_at_call_start_ms` (3000 in the logs) every frame is still sent. `MediaStats.AudioFramesSkippedDTX` counts the skipped frames.
