@@ -3,8 +3,6 @@ package meowcaller
 import (
 	"errors"
 	"testing"
-
-
 )
 
 func TestDTMFOnlyForBusinessAPICalls(t *testing.T) {
@@ -20,4 +18,3 @@ func TestDTMFOnlyForBusinessAPICalls(t *testing.T) {
 		t.Fatal("capi peer not seen as a business call")
 	}
 }
-
