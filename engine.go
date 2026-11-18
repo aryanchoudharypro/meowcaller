@@ -740,6 +740,7 @@ func (e *engine) onOffer(ev *events.CallOffer) {
 		"from": ev.From.String(), "peer": peer.String(),
 	})
 	call := &Call{eng: e, id: ev.CallID, peer: peer, phase: CallPhaseRinging}
+	call.setPeerPlatform(ev.RemotePlatform)
 
 	e.mu.Lock()
 	m := e.entry(ev.CallID)
@@ -1159,6 +1160,11 @@ func (e *engine) onPreAccept(ev *events.CallPreAccept) {
 		}
 		e.mu.Unlock()
 	}
+	e.mu.Lock()
+	if current := e.calls[ev.CallID]; current != nil && current.call != nil {
+		current.call.setPeerPlatform(ev.RemotePlatform)
+	}
+	e.mu.Unlock()
 	e.c.log.Info().
 		Str("call_id", ev.CallID).
 		Str("from", ev.From.String()).
@@ -1262,6 +1268,7 @@ func (e *engine) onAccept(ev *events.CallAccept) {
 		m.call.setPhase(CallPhaseConnecting)
 	}
 	if m.call != nil {
+		m.call.setPeerPlatform(ev.RemotePlatform)
 		m.call.markPeerAccepted()
 		e.announceMuteOnAccept(m.call)
 	}

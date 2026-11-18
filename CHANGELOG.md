@@ -7,6 +7,10 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### signaling — keypad tones (DTMF) for business calls — `implemented`
+
+- `Call.SendDTMF` sends `<dtmf call-id call-creator tone>` (WA's `serialize_dtmf`) for one of 0-9, `*`, `#`. Like WhatsApp it only works on a call with a business on the Cloud API (`Call.BusinessAPICall`, WA Web's `isCapiCall`); `Call.PeerPlatform` keeps the platform the peer's offer, preaccept or accept reported. ASSUMPTION: that platform is spelled "capi". NOT VALIDATED live.
+
 ### engine — network health (poor connection) — `implemented`
 
 - `Call.OnNetworkHealth` reports when the call's network turns poor or very poor and when it recovers, like WhatsApp's "Poor connection" banner. It is judged once a second from the relay's answers (0x0802) to our keepalive pings (lost pings over the last `net_health_ping_loss_sample_size` and their round trip), the audio the peer reports losing, and, on a 1:1 call, the peer's audio lost on the way to us while our pings are fine (`PeerSide`: their connection is the poor one). A worse verdict must hold 3 s, a better one 6 s. At most `net_health_max_sent_banner` poor turns are reported per call, and the first carries `SoundAlert` (`net_health_max_sound_alert_audio`, 1). Off when `enable_network_health_monitor` is off, and while reconnecting. Ping loss counts only once a relay has answered a ping.

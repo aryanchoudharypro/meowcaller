@@ -3,6 +3,8 @@ package meowcaller
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -53,6 +55,7 @@ type Call struct {
 	peerSendsOpus   atomic.Bool
 	onAudioHealth   func(AudioHealth)
 	onNetworkHealth func(NetworkHealth)
+	peerPlatform    atomic.Value
 	// netHealth* are the server's options.net_health_* settings.
 	netHealthOff             atomic.Bool
 	netHealthSamples         atomic.Int32
@@ -385,6 +388,44 @@ func (c *Call) AddParticipants(ctx context.Context, targets ...string) []error {
 func (c *Call) RingParticipant(ctx context.Context, target string) error {
 	// Source of truth: https://github.com/purpshell/meowcaller/blob/160912971e6bc2a4aa79ac3aafcf08360075e3fc/datasheets/api-group-participant-invite.md#L23-L100
 	return c.eng.ringParticipant(ctx, c.id, target)
+}
+
+// PeerPlatform is the platform the other side's device reported in its
+// offer, preaccept or accept ("android", "iphone", "web", ...), or "".
+func (c *Call) PeerPlatform() string {
+	p, _ := c.peerPlatform.Load().(string)
+	return p
+}
+
+func (c *Call) setPeerPlatform(platform string) {
+	if platform == "" {
+		return
+	}
+	c.peerPlatform.Store(platform)
+}
+
+// BusinessAPICall reports whether the other side is a business on the
+// WhatsApp Cloud API, the only kind of call WhatsApp shows a keypad for
+// (WA Web: isCapiCall, a participant whose device platform is CAPI).
+func (c *Call) BusinessAPICall() bool {
+	// ASSUMPTION: the stanza spells the CAPI platform "capi" (the wasm's ClientPlatform enum value is 12); unconfirmed.
+	p := strings.ToLower(c.PeerPlatform())
+	return p == "capi" || p == "12"
+}
+
+// ErrDTMFNotSupported is returned when a keypad tone is sent on a call that
+// isn't with a business on the Cloud API.
+var ErrDTMFNotSupported = errors.New("meowcaller: keypad tones only work in calls with a business")
+
+// SendDTMF sends one keypad press (0-9, * or #) to a business caller's menu.
+func (c *Call) SendDTMF(tone rune) error {
+	if !strings.ContainsRune("0123456789*#", tone) {
+		return fmt.Errorf("meowcaller: %q is not a keypad tone", tone)
+	}
+	if !c.BusinessAPICall() {
+		return ErrDTMFNotSupported
+	}
+	return c.eng.sendDTMF(c, string(tone))
 }
 
 // SendReaction sends an emoji over this call's RTC app-data stream. Pass an empty

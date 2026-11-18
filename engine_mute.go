@@ -72,6 +72,23 @@ func (e *engine) setMuted(c *Call, muted bool) error {
 	return nil
 }
 
+// sendDTMF sends one keypad tone to the peer of an answered call.
+func (e *engine) sendDTMF(c *Call, tone string) error {
+	// Source of truth: WA Web VoIP wasm rEjXwUYzMaj wa_call_send_capi_dtmf_tone (func 1159: "Call not active" unless connected)
+	to, creator, ok := e.muteTarget(c.id)
+	if !ok || c.State() == CallPhaseEnded {
+		return errors.New("meowcaller: call is not active")
+	}
+	node := signaling.BuildDTMF(c.id, to, creator, tone)
+	node.Attrs["id"] = e.nextCallNodeID()
+	if err := e.transmitCallNode(context.Background(), node); err != nil {
+		e.c.log.Warn().Err(err).Str("call_id", c.id).Msg("send dtmf failed")
+		return fmt.Errorf("meowcaller: send dtmf: %w", err)
+	}
+	e.c.log.Debug().Str("call_id", c.id).Msg("sent keypad tone")
+	return nil
+}
+
 // announceMuteOnAccept tells the device that just answered an outgoing call
 // about a mute chosen while it rang.
 func (e *engine) announceMuteOnAccept(c *Call) {

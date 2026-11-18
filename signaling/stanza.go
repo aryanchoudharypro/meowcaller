@@ -348,6 +348,14 @@ func BuildMuteV2(callID string, to, callCreator types.JID, muteState string, log
 	return callWrap(to, nil, action)
 }
 
+// BuildDTMF builds <dtmf call-id call-creator tone>: one keypad press sent to a
+// business (Cloud API) caller's menu.
+func BuildDTMF(callID string, to, callCreator types.JID, tone string) waBinary.Node {
+	// Source of truth: WA Web VoIP wasm rEjXwUYzMaj serialize_dtmf (func 12421: tag "dtmf", attribute "tone"), make_and_send_capi_dtmf_tone_msg
+	action := waBinary.Node{Tag: "dtmf", Attrs: waBinary.Attrs{"call-id": callID, "call-creator": callCreator, "tone": tone}}
+	return callWrap(to, nil, action)
+}
+
 // Reject reasons. Without one, a reject is the callee declining the call. With
 // one, it speaks only for the device that sent it: RejectReasonBusy is a device
 // already on a call (or one that can't do calls), RejectReasonEnc a device that
