@@ -53,6 +53,8 @@ type OfferParams struct {
 	Capability     []byte // nil = absent
 	DeviceIdentity []byte // nil = absent
 	Video          bool   // true = advertise <video> (video call)
+	// AudioRates are the <audio enc=opus rate> values to offer; nil = 8000, 16000.
+	AudioRates []string
 }
 
 // BuildOffer builds <call to=peer><offer …>…</offer></call> with the mandatory
@@ -72,7 +74,13 @@ func BuildOffer(p *OfferParams, log ...zerolog.Logger) waBinary.Node {
 	if p.PrivacyToken != nil {
 		children = append(children, waBinary.Node{Tag: "privacy", Content: p.PrivacyToken})
 	}
-	children = append(children, audioOpus("8000"), audioOpus("16000"))
+	rates := p.AudioRates
+	if rates == nil {
+		rates = []string{"8000", "16000"}
+	}
+	for _, rate := range rates {
+		children = append(children, audioOpus(rate))
+	}
 	if p.Video {
 		children = append(children, videoOfferNode())
 	}

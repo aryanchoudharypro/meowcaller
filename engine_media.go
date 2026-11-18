@@ -523,6 +523,9 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 			return err
 		}
 		audioReceivers.negotiatedOpus = func() bool { return call != nil && call.negotiatedOpus.Load() }
+		audioReceivers.fastAudioClock = func() bool {
+			return call != nil && (call.AudioRate() > SampleRate || call.peerClock48k.Load())
+		}
 		unpublishedReceivers := audioReceivers
 		defer func() {
 			if unpublishedReceivers != nil {
@@ -890,7 +893,11 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 			var opusFrame []byte
 			if player, _ := callPlayerSink(call); player != nil {
 				// Drained even while muted, so the source doesn't back up.
-				if f, encoded := player.nextFrameOpus(); f != nil && !call.IsMuted() {
+				rate := SampleRate
+				if !groupMode.Load() {
+					rate = call.AudioRate()
+				}
+				if f, encoded := player.nextFrameOpus(rate); f != nil && !call.IsMuted() {
 					frame, opusFrame = f, encoded
 				}
 			}

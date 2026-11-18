@@ -24,3 +24,20 @@ func TestUnusualAudioRatesInAnOffer(t *testing.T) {
 		t.Fatal("nil node")
 	}
 }
+
+func TestPeerAudioRatesReadTheStanzaOrItsCall(t *testing.T) {
+	audio := func(enc, rate string) waBinary.Node {
+		return waBinary.Node{Tag: "audio", Attrs: waBinary.Attrs{"enc": enc, "rate": rate}}
+	}
+	offer := waBinary.Node{Tag: "offer", Content: []waBinary.Node{audio("opus", "16000"), audio("opus", "24000"), audio("other", "48000")}}
+	if got := peerAudioRates(&offer); len(got) != 2 || got[1] != "24000" {
+		t.Fatalf("offer: %v", got)
+	}
+	call := waBinary.Node{Tag: "call", Content: []waBinary.Node{offer}}
+	if got := peerAudioRates(&call); len(got) != 2 {
+		t.Fatalf("call: %v", got)
+	}
+	if peerAudioRates(&waBinary.Node{Tag: "ack"}) != nil {
+		t.Fatal("ack")
+	}
+}

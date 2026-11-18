@@ -7,6 +7,13 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### audio — super-wideband (24/48 kHz) Opus — `implemented`
+
+- When the server's `<voip_settings>` turn super-wideband on the way WA's engine requires (`options.enable_sampling_rate_overrides` plus non-zero `audio_init.driver_sampling_rate_max`, `conf_bridge.conf_bridge_sampling_rate` and `encode.sampling_rate`, or `audio_dev.force_swb`), the preaccept and accept advertise `<audio enc=opus rate=24000/48000>` next to 16000. An outgoing offer advertises what the last settings allowed. Without those settings nothing changes.
+- The call runs the highest rate both sides advertised (WA's `handle_peer_audio_caps`); MLow and group calls stay at 16 kHz. `Call.AudioRate` reports it, and a source implementing the new `AudioRateListener` is told, so it can encode its Opus at that rate. PCM in and out stays 16 kHz.
+- A peer whose audio RTP clock runs at 48 kHz (`enable_48khz_rtp_clock`) or 24 kHz has its timestamps rescaled to 16 kHz ticks once five packets in a row show it; only measured when super-wideband or the 48 kHz clock is on. Our own timestamps stay at 16 kHz.
+- Unit tests only; never seen from the server yet, so NOT VALIDATED live.
+
 ### engine — call robustness against WhatsApp's stack — `implemented`
 
 - Answering works again on standard-Opus calls. The accept carried `<voip_settings>` and a capability with the MLow bit cleared whenever the call was on Opus (whatsapp-rust #1050); now that a call without `use_mlow_codec_v1` is Opus, every answer did, and the server silently dropped it (no ack, not relayed), so the caller kept ringing. The accept is now always shaped like WhatsApp for Windows': the normal capability and no `<voip_settings>`.

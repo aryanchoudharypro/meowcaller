@@ -266,7 +266,7 @@ func TestPlayerHandsOverTheSourcesOpusEncoding(t *testing.T) {
 		frames: [][]float32{make([]float32, FrameSamples), make([]float32, FrameSamples)},
 		opus:   [][]byte{encoded, nil},
 	})
-	frame, opusFrame := player.nextFrameOpus()
+	frame, opusFrame := player.nextFrameOpus(SampleRate)
 	if len(frame) != FrameSamples || string(opusFrame) != string(encoded) {
 		t.Fatalf("first frame = %d samples with Opus %x", len(frame), opusFrame)
 	}
@@ -275,7 +275,7 @@ func TestPlayerHandsOverTheSourcesOpusEncoding(t *testing.T) {
 	}
 	// A frame the source could not encode goes out as a silent Opus packet,
 	// never as MLow bytes the peer would decode as noise.
-	frame, opusFrame = player.nextFrameOpus()
+	frame, opusFrame = player.nextFrameOpus(SampleRate)
 	if len(frame) != FrameSamples || opusFrame != nil {
 		t.Fatalf("second frame = %d samples with Opus %x", len(frame), opusFrame)
 	}
@@ -287,7 +287,7 @@ func TestPlayerHandsOverTheSourcesOpusEncoding(t *testing.T) {
 	}
 	// A plain PCM source has no encoding to hand over.
 	player.Play(PCMStream(io.NopCloser(bytes.NewReader(make([]byte, FrameSamples*2)))))
-	if frame, opusFrame = player.nextFrameOpus(); len(frame) != FrameSamples || opusFrame != nil {
+	if frame, opusFrame = player.nextFrameOpus(SampleRate); len(frame) != FrameSamples || opusFrame != nil {
 		t.Fatalf("PCM source frame = %d samples with Opus %x", len(frame), opusFrame)
 	}
 }

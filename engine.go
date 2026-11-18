@@ -53,6 +53,10 @@ type engine struct {
 	// terminateJoinable records, per call-id, a raw terminate's joinable flag
 	// until whatsmeow's CallTerminate event for it arrives.
 	terminateJoinable map[string]bool
+	// lastMaxAudioRate is the audio rate the server's latest <voip_settings>
+	// allowed (16000 unless it turned super-wideband on). An outgoing offer
+	// goes out before its own call's settings arrive, so it advertises this.
+	lastMaxAudioRate int
 }
 
 // engineCall is the engine's per-call state: the public Call handle plus the inputs
@@ -88,10 +92,16 @@ type engineCall struct {
 	// otherwise recompute codec from the local preference alone and silently undo a
 	// downgrade the peer already forced.
 	peerMlowCapability signaling.CapabilityBit
-	localVideo         bool // this client is sending, or has requested to send, video
-	remoteVideo        bool // the peer is sending video to this client
-	videoGate          bool // outbound upgrade is waiting for peer acceptance
-	peerVideoUpgrade   bool // the peer's inbound upgrade is waiting for local acceptance
+	// maxAudioRate is the highest audio rate this call's <voip_settings> allow;
+	// ownAudioBits and peerAudioBits are the <audio rate> sets each side
+	// advertised (WA's bits: 8000=1, 16000=2, 24000=4, 48000=8).
+	maxAudioRate     int
+	ownAudioBits     uint8
+	peerAudioBits    uint8
+	localVideo       bool // this client is sending, or has requested to send, video
+	remoteVideo      bool // the peer is sending video to this client
+	videoGate        bool // outbound upgrade is waiting for peer acceptance
+	peerVideoUpgrade bool // the peer's inbound upgrade is waiting for local acceptance
 	// peerVideoUpgradeAt is when that request arrived. Camera preparation waits
 	// for the first decodable IDR, outside the signaling path, so it can outlast
 	// the peer's own five-second timeout: by the time the accept is ready the
@@ -583,7 +593,11 @@ func (e *engine) placeCall(ctx context.Context, target string, opts CallOptions)
 	}
 
 	callID := newCallID()
+	e.mu.Lock()
+	offerRates := append([]string{"8000"}, signaling.AudioRates(e.lastMaxAudioRate)...)
+	e.mu.Unlock()
 	offer := signaling.BuildOffer(&signaling.OfferParams{
+		AudioRates:     offerRates,
 		CallID:         callID,
 		To:             peerLID,
 		CallCreator:    self,
@@ -610,6 +624,7 @@ func (e *engine) placeCall(ctx context.Context, target string, opts CallOptions)
 	m.direction = CallDirectionOutgoing
 	m.offeredDevices = append([]types.JID(nil), devices...)
 	m.peerBareJID = peerLID
+	m.ownAudioBits = signaling.AudioRateBits(offerRates)
 	m.localVideo = opts.Video
 	m.remoteVideo = opts.Video
 	m.inviteSelfDevice = groupCallDevice{
@@ -821,12 +836,13 @@ func (e *engine) onGroupOffer(ev *events.CallOffer, update groupCallUpdate) {
 // eagerly when the offer arrives (see onOffer), independent of the later Answer/Reject
 // decision. Video calls also advertise the H.264 decoder before the final accept.
 func (e *engine) sendPreaccept(callID string, to, creator types.JID, video bool) error {
+	rates := e.ownAnswerRates(callID)
 	pre := signaling.BuildPreaccept(
 		callID,
 		to,
 		creator,
 		e.c.wa.DangerousInternals().GenerateRequestID(),
-		[]string{"16000"},
+		rates,
 		video,
 	)
 	if err := e.c.wa.DangerousInternals().SendNode(context.Background(), pre); err != nil {
@@ -834,6 +850,22 @@ func (e *engine) sendPreaccept(callID string, to, creator types.JID, video bool)
 	}
 	e.c.log.Info().Str("call_id", callID).Msg("preaccepted (preparation; awaiting Answer/Reject)")
 	return nil
+}
+
+// ownAnswerRates is the <audio rate> list our preaccept and accept carry:
+// 16000, plus the super-wideband rates when this call's <voip_settings> turned
+// them on. It records them as our side of the rate negotiation.
+func (e *engine) ownAnswerRates(callID string) []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	m := e.calls[callID]
+	if m == nil {
+		return signaling.AudioRates(SampleRate)
+	}
+	rates := signaling.AudioRates(m.maxAudioRate)
+	m.ownAudioBits = signaling.AudioRateBits(rates)
+	e.resolveAudioRate(m, callID)
+	return rates
 }
 
 // answer accepts an inbound call. The <preaccept> was already sent eagerly when the offer
@@ -925,7 +957,7 @@ func (e *engine) sendAccept(callID string, to, creator types.JID) {
 	var acceptVoipSettings []byte
 	accept := signaling.BuildAccept(&signaling.AcceptParams{
 		CallID: callID, To: to, CallCreator: creator,
-		AudioRates:   []string{"16000"},
+		AudioRates:   e.ownAnswerRates(callID),
 		Metadata:     waBinary.Attrs{"peer_abtest_bucket_id_list": "125208,94276"},
 		Capability:   acceptCapability,
 		VoipSettings: acceptVoipSettings,
@@ -1373,17 +1405,81 @@ func (e *engine) applyVoipSettingsCodec(m *engineCall, node *waBinary.Node, call
 			e.c.log.Debug().Err(err).Str("call_id", callID).Msg("voip_settings parse failed; keeping mlow")
 		} else {
 			m.localCodec = selectAudioCodec(vs)
+			m.maxAudioRate = vs.MaxAudioRate()
+			e.lastMaxAudioRate = m.maxAudioRate
+			if vs.Enable48kHzRTPClock && m.call != nil {
+				m.call.peerClock48k.Store(true)
+				e.c.log.Info().Str("call_id", callID).
+					Msg("server asks for the 48 kHz audio RTP clock; incoming timestamps are rescaled, ours stay 16 kHz")
+			}
 		}
 		if hq := signaling.HighQualityAudioSettings(content); len(hq) > 0 {
-			e.c.log.Warn().Str("call_id", callID).Strs("settings", hq).
-				Msg("HIGH-QUALITY AUDIO: the server sent settings for audio above 16 kHz wideband; this call still runs 16 kHz")
+			e.c.log.Info().Str("call_id", callID).Strs("settings", hq).Int("max_audio_rate", m.maxAudioRate).
+				Msg("HIGH-QUALITY AUDIO: the server sent settings for audio above 16 kHz wideband")
 		}
 	}
-	if rates := unusualAudioRates(node); len(rates) > 0 {
-		e.c.log.Warn().Str("call_id", callID).Strs("rates", rates).
-			Msg("HIGH-QUALITY AUDIO: the peer offered an audio rate other than 8/16 kHz; this call still runs 16 kHz")
+	if rates := peerAudioRates(node); len(rates) > 0 {
+		m.peerAudioBits = signaling.AudioRateBits(rates)
+		if rates := unusualAudioRates(node); len(rates) > 0 {
+			e.c.log.Info().Str("call_id", callID).Strs("rates", rates).
+				Msg("HIGH-QUALITY AUDIO: the peer offered an audio rate above 16 kHz")
+		}
 	}
 	e.resolveAudioCodec(m, callID)
+	e.resolveAudioRate(m, callID)
+}
+
+// resolveAudioRate settles the call's audio sampling rate: the highest rate
+// both sides advertised, as WA's handle_peer_audio_caps does, and 16000 on an
+// MLow call. The caller holds e.mu.
+func (e *engine) resolveAudioRate(m *engineCall, callID string) {
+	rate := signaling.HighestCommonAudioRate(m.ownAudioBits, m.peerAudioBits)
+	if m.codec != AudioCodecOpus || m.group {
+		rate = SampleRate
+	}
+	if m.call == nil || int(m.call.audioRate.Load()) == rate {
+		return
+	}
+	if rate != SampleRate || m.call.audioRate.Load() != 0 {
+		e.c.log.Info().Str("call_id", callID).Int("audio_rate", rate).
+			Uint8("own_rates", m.ownAudioBits).Uint8("peer_rates", m.peerAudioBits).
+			Msg("audio sampling rate negotiated")
+	}
+	m.call.audioRate.Store(int32(rate))
+}
+
+// peerAudioRates returns the rate of each <audio enc=opus> child of a
+// peer-sent offer, preaccept or accept (the stanza itself or the <call>
+// wrapping it).
+func peerAudioRates(node *waBinary.Node) []string {
+	if node == nil {
+		return nil
+	}
+	var rates []string
+	collect := func(n waBinary.Node) {
+		for _, child := range n.GetChildren() {
+			if child.Tag != "audio" {
+				continue
+			}
+			ag := child.AttrGetter()
+			if enc := ag.OptionalString("enc"); enc != "" && enc != "opus" {
+				continue
+			}
+			if rate := ag.OptionalString("rate"); rate != "" {
+				rates = append(rates, rate)
+			}
+		}
+	}
+	collect(*node)
+	if len(rates) == 0 {
+		for _, child := range node.GetChildren() {
+			switch child.Tag {
+			case "offer", "accept", "preaccept":
+				collect(child)
+			}
+		}
+	}
+	return rates
 }
 
 // unusualAudioRates returns the <audio enc rate> entries anywhere in a call

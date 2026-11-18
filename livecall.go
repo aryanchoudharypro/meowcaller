@@ -39,18 +39,22 @@ type Call struct {
 	// negotiatedOpus mirrors the signaling's codec choice; peerSendsOpus is
 	// set once the peer's own packets settle as standard Opus. Either means
 	// the peer decodes the shared payload type as Opus.
-	negotiatedOpus            atomic.Bool
-	peerSendsOpus             atomic.Bool
-	onAudioHealth             func(AudioHealth)
-	videoSink                 VideoSink
-	onVideoState              func(VideoState)
-	onVideoKeyframeRequest    func()
-	onScreenKeyframeRequest   func()
-	onParticipantVideoFrame   func(ParticipantVideoFrame)
-	onParticipantScreenFrame  func(ParticipantVideoFrame)
+	negotiatedOpus atomic.Bool
+	// audioRate is the negotiated audio sampling rate (0 until settled = 16 kHz).
+	audioRate atomic.Int32
+	// peerClock48k is set when the server turned on the 48 kHz audio RTP clock.
+	peerClock48k             atomic.Bool
+	peerSendsOpus            atomic.Bool
+	onAudioHealth            func(AudioHealth)
+	videoSink                VideoSink
+	onVideoState             func(VideoState)
+	onVideoKeyframeRequest   func()
+	onScreenKeyframeRequest  func()
+	onParticipantVideoFrame  func(ParticipantVideoFrame)
+	onParticipantScreenFrame func(ParticipantVideoFrame)
 	// peerKeyframeWanted is a keyframe request from the application's decoder:
 	// 1<<32 | the stream's SSRC (0 for any stream), or 0 for none.
-	peerKeyframeWanted atomic.Uint64
+	peerKeyframeWanted        atomic.Uint64
 	onReaction                func(CallReaction)
 	groupState                *GroupCallState
 	onGroupState              func(GroupCallState)
@@ -919,6 +923,20 @@ func (c *Call) markPeerAccepted() {
 func (c *Call) SetMuted(muted bool) error {
 	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/3987f7c809a0b1ca3296a0e9a4fbb7ce96ea3181/src/voip/facade.rs#L3876-L3913
 	return c.eng.setMuted(c, muted)
+}
+
+// AudioRate is the call's negotiated audio sampling rate: 16000, or 24000 or
+// 48000 once both sides advertised super-wideband Opus (the server turns it on
+// in <voip_settings>). A source implementing AudioRateListener is told when
+// it changes, so it can encode its Opus frames at that rate.
+func (c *Call) AudioRate() int {
+	if c == nil {
+		return SampleRate
+	}
+	if rate := int(c.audioRate.Load()); rate > 0 {
+		return rate
+	}
+	return SampleRate
 }
 
 // IsMuted reports whether this client's microphone is muted.

@@ -27,6 +27,9 @@ type Player struct {
 	src      AudioSource
 	state    PlayerState
 	onFinish func()
+	// rateSrc is the source last told the call's audio rate, rate that rate.
+	rateSrc AudioSource
+	rate    int
 }
 
 // NewPlayer returns an idle Player.
@@ -96,20 +99,28 @@ func (p *Player) OnFinish(fn func()) {
 // next source frame while Playing, or nil to send silence (idle/paused/between
 // sources). On source EOF it goes Idle and fires OnFinish (outside the lock).
 func (p *Player) nextFrame() []float32 {
-	frame, _ := p.nextFrameOpus()
+	frame, _ := p.nextFrameOpus(SampleRate)
 	return frame
 }
 
 // nextFrameOpus is nextFrame plus the same frame as a standard Opus packet, when
-// the source is an OpusFrameSource and has one.
-func (p *Player) nextFrameOpus() (frame []float32, opusFrame []byte) {
+// the source is an OpusFrameSource and has one. rate is the call's audio
+// rate, passed on to a source that implements AudioRateListener when it changes.
+func (p *Player) nextFrameOpus(rate int) (frame []float32, opusFrame []byte) {
 	p.mu.Lock()
 	if p.state != PlayerPlaying || p.src == nil {
 		p.mu.Unlock()
 		return nil, nil
 	}
 	src := p.src
+	tell := p.rateSrc != src || p.rate != rate
+	if tell {
+		p.rateSrc, p.rate = src, rate
+	}
 	p.mu.Unlock()
+	if listener, ok := src.(AudioRateListener); ok && tell {
+		listener.SetAudioRate(rate)
+	}
 
 	frame, err := src.ReadFrame()
 	if err == nil {

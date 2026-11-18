@@ -84,6 +84,7 @@ type participantAudioReceiver struct {
 	srtcp       *mediaSrtcpReceiver
 	decoder     participantAudioDecoder
 	codecProbe  inboundCodecProbe
+	rtpClock    rtpClockScaler
 	opusDecoder *standardOpusDecoder
 }
 
@@ -137,19 +138,22 @@ type participantReceiveRegistry struct {
 	// negotiatedOpus, when set, says the call negotiated standard Opus for
 	// payload type 120, so packets there go to the Opus decoder without
 	// waiting for the probe (as WA's engine registers "opus" for 120).
-	negotiatedOpus   func() bool
-	byDeviceID       map[string]*participantAudioReceiver
-	byPID            map[uint32]*participantAudioReceiver
-	bySSRC           map[uint32]*participantAudioReceiver
-	byVideoSSRC      map[uint32]*participantAudioReceiver
-	byAppDataSSRC    map[uint32]*participantAudioReceiver
-	bySRTCPSSRC      map[uint32]*participantAudioReceiver
-	sendPipes        []*MediaPipeline
-	srtcpSenders     []*mediaSrtcpSender
-	pendingEpochs    map[uint32][]byte
-	installedEpoch   installedGroupRawEpoch
-	hasEpoch         bool
-	log              zerolog.Logger
+	negotiatedOpus func() bool
+	// fastAudioClock, when set, says the peer's audio RTP clock may run above
+	// 16 kHz (super-wideband or the 48 kHz clock is on), so it is measured.
+	fastAudioClock func() bool
+	byDeviceID     map[string]*participantAudioReceiver
+	byPID          map[uint32]*participantAudioReceiver
+	bySSRC         map[uint32]*participantAudioReceiver
+	byVideoSSRC    map[uint32]*participantAudioReceiver
+	byAppDataSSRC  map[uint32]*participantAudioReceiver
+	bySRTCPSSRC    map[uint32]*participantAudioReceiver
+	sendPipes      []*MediaPipeline
+	srtcpSenders   []*mediaSrtcpSender
+	pendingEpochs  map[uint32][]byte
+	installedEpoch installedGroupRawEpoch
+	hasEpoch       bool
+	log            zerolog.Logger
 }
 
 func newParticipantReceiveRegistry(
@@ -1006,6 +1010,15 @@ func (r *participantReceiveRegistry) decodeAuthenticatedAudio(receiver *particip
 	// frame following a RED one (or vice versa) misparses.
 	redundancy := 0
 	standardOpus := false
+	if authenticatedHeader.PayloadType == rtp.RtpPayloadTypeOpus {
+		fast := r.fastAudioClock != nil && r.fastAudioClock()
+		before := receiver.rtpClock.clockRate()
+		authenticatedHeader.Timestamp = receiver.rtpClock.normalize(payload, authenticatedHeader.SequenceNumber, authenticatedHeader.Timestamp, fast)
+		if rate := receiver.rtpClock.clockRate(); rate != before {
+			r.log.Info().Str("call_id", r.callID).Str("participant_id", receiver.participantID).
+				Int("rtp_clock", rate).Msg("peer's audio RTP clock is faster than 16 kHz; rescaling its timestamps")
+		}
+	}
 	if authenticatedHeader.PayloadType == rtp.RtpPayloadTypeMlowRed {
 		redundancy = 1
 	} else if authenticatedHeader.PayloadType == rtp.RtpPayloadTypeMlow {

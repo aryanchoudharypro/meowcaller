@@ -43,6 +43,15 @@ type OpusFrameSource interface {
 	OpusFrame() []byte
 }
 
+// AudioRateListener is an OpusFrameSource that can encode its Opus frames
+// above 16 kHz. Once a call settles on super-wideband audio (24000 or 48000,
+// see Call.AudioRate) the call tells its source the rate before the next
+// frame, and 16000 again if it falls back. ReadFrame stays 16 kHz PCM; only
+// OpusFrame changes, and its packets still last 60 ms.
+type AudioRateListener interface {
+	SetAudioRate(rate int)
+}
+
 // AudioSink consumes the 16 kHz mono PCM frames decoded from the peer's audio. Attach
 // one with Call.Receive; built-ins record to a WAV file or forward to a callback. A
 // CGO Speaker() sink lives in the meowcaller/audio/malgo subpackage.
