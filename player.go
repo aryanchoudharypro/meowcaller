@@ -27,9 +27,11 @@ type Player struct {
 	src      AudioSource
 	state    PlayerState
 	onFinish func()
-	// rateSrc is the source last told the call's audio rate, rate that rate.
+	// rateSrc is the source last told the call's audio rate and DTX setting,
+	// rate and dtx what it was told.
 	rateSrc AudioSource
 	rate    int
+	dtx     bool
 }
 
 // NewPlayer returns an idle Player.
@@ -99,27 +101,29 @@ func (p *Player) OnFinish(fn func()) {
 // next source frame while Playing, or nil to send silence (idle/paused/between
 // sources). On source EOF it goes Idle and fires OnFinish (outside the lock).
 func (p *Player) nextFrame() []float32 {
-	frame, _ := p.nextFrameOpus(SampleRate)
+	frame, _ := p.nextFrameOpus(SampleRate, false)
 	return frame
 }
 
 // nextFrameOpus is nextFrame plus the same frame as a standard Opus packet, when
 // the source is an OpusFrameSource and has one. rate is the call's audio
 // rate, passed on to a source that implements AudioRateListener when it changes.
-func (p *Player) nextFrameOpus(rate int) (frame []float32, opusFrame []byte) {
+func (p *Player) nextFrameOpus(rate int, dtx bool) (frame []float32, opusFrame []byte) {
 	p.mu.Lock()
 	if p.state != PlayerPlaying || p.src == nil {
 		p.mu.Unlock()
 		return nil, nil
 	}
 	src := p.src
-	tell := p.rateSrc != src || p.rate != rate
-	if tell {
-		p.rateSrc, p.rate = src, rate
-	}
+	tellRate := p.rateSrc != src || p.rate != rate
+	tellDTX := p.rateSrc != src || p.dtx != dtx
+	p.rateSrc, p.rate, p.dtx = src, rate, dtx
 	p.mu.Unlock()
-	if listener, ok := src.(AudioRateListener); ok && tell {
+	if listener, ok := src.(AudioRateListener); ok && tellRate {
 		listener.SetAudioRate(rate)
+	}
+	if listener, ok := src.(AudioDTXListener); ok && tellDTX {
+		listener.SetAudioDTX(dtx)
 	}
 
 	frame, err := src.ReadFrame()

@@ -132,3 +132,21 @@ func (c *Call) sendsStandardOpus() bool {
 func (c *Call) StandardOpus() bool {
 	return c.sendsStandardOpus()
 }
+
+// dtxFrameMaxBytes is the largest packet libopus emits for a frame DTX leaves
+// out (a TOC byte, or TOC plus an empty frame).
+const dtxFrameMaxBytes = 2
+
+// skipDTXFrame reports whether the send loop leaves this frame out: the server
+// asked for DTX, the source encoded the frame as DTX silence, and the call is
+// past the start window (options.enable_additional_dtx_frames_at_call_start_ms)
+// during which every frame is still sent so the relay and the peer settle on
+// the stream. tick counts frame intervals since media started, from 1.
+func skipDTXFrame(c *Call, opusFrame []byte, tick uint64) bool {
+	// Source of truth: WA Web VoIP wasm rEjXwUYzMaj (rc.dtx, enable_additional_dtx_frames_at_call_start_ms)
+	if !c.DTX() || len(opusFrame) == 0 || len(opusFrame) > dtxFrameMaxBytes {
+		return false
+	}
+	startFrames := uint64(c.dtxStartMs.Load()) * SampleRate / 1000 / FrameSamples
+	return tick > startFrames
+}

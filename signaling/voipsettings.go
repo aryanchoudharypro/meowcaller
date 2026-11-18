@@ -48,6 +48,13 @@ type VoipSettings struct {
 	Enable48kHzRTPClock bool
 	// OpusMaxBandwidth mirrors encode.opus_max_bandwidth; 0 if absent.
 	OpusMaxBandwidth int
+	// DTX mirrors rc.dtx: the encoder stops sending in silence, as the shipped
+	// clients do (an Android peer's timestamps jump while its sequence numbers
+	// stay contiguous).
+	DTX bool
+	// DTXStartMs mirrors options.enable_additional_dtx_frames_at_call_start_ms:
+	// how long after media starts silent frames are still sent.
+	DTXStartMs int
 }
 
 // MaxAudioRate is the highest audio sampling rate these settings let a call
@@ -136,10 +143,12 @@ func ParseVoipSettings(raw []byte, log ...zerolog.Logger) (*VoipSettings, error)
 		} `json:"encode"`
 		RC struct {
 			TargetBitrate flexString `json:"target_bitrate"`
+			DTX           flexString `json:"dtx"`
 		} `json:"rc"`
 		Options struct {
 			SamplingRateOverrides flexString `json:"enable_sampling_rate_overrides"`
 			Enable48kHzRTPClock   flexString `json:"enable_48khz_rtp_clock"`
+			DTXStartMs            flexString `json:"enable_additional_dtx_frames_at_call_start_ms"`
 		} `json:"options"`
 		AudioInit struct {
 			DriverSamplingRateMax flexString `json:"driver_sampling_rate_max"`
@@ -167,6 +176,8 @@ func ParseVoipSettings(raw []byte, log ...zerolog.Logger) (*VoipSettings, error)
 		ForceSWB:               settingIsOn(string(doc.AudioDev.ForceSWB)),
 		Enable48kHzRTPClock:    settingIsOn(string(doc.Options.Enable48kHzRTPClock)),
 		OpusMaxBandwidth:       atoiOrZero(string(doc.Encode.OpusMaxBandwidth)),
+		DTX:                    settingIsOn(string(doc.RC.DTX)),
+		DTXStartMs:             atoiOrZero(string(doc.Options.DTXStartMs)),
 	}
 	lg.Debug().
 		Bool("use_mlow_codec_v1", vs.UseMlowCodecV1).
@@ -174,6 +185,7 @@ func ParseVoipSettings(raw []byte, log ...zerolog.Logger) (*VoipSettings, error)
 		Int("target_bitrate", vs.TargetBitrate).
 		Int("max_audio_rate", vs.MaxAudioRate()).
 		Bool("rtp_clock_48khz", vs.Enable48kHzRTPClock).
+		Bool("dtx", vs.DTX).
 		Msg("parsed voip_settings")
 	return vs, nil
 }

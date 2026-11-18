@@ -43,7 +43,11 @@ type Call struct {
 	// audioRate is the negotiated audio sampling rate (0 until settled = 16 kHz).
 	audioRate atomic.Int32
 	// peerClock48k is set when the server turned on the 48 kHz audio RTP clock.
-	peerClock48k             atomic.Bool
+	peerClock48k atomic.Bool
+	// dtx and dtxStartMs are the server's rc.dtx and the time silent frames
+	// are still sent after media starts.
+	dtx                      atomic.Bool
+	dtxStartMs               atomic.Int32
 	peerSendsOpus            atomic.Bool
 	onAudioHealth            func(AudioHealth)
 	videoSink                VideoSink
@@ -929,6 +933,13 @@ func (c *Call) SetMuted(muted bool) error {
 // 48000 once both sides advertised super-wideband Opus (the server turns it on
 // in <voip_settings>). A source implementing AudioRateListener is told when
 // it changes, so it can encode its Opus frames at that rate.
+// DTX reports whether the server asked for discontinuous transmission: the
+// source's Opus encoder should run with DTX on (see AudioDTXListener), and the
+// call leaves out the frames it marks as silence, as the shipped clients do.
+func (c *Call) DTX() bool {
+	return c != nil && c.dtx.Load()
+}
+
 func (c *Call) AudioRate() int {
 	if c == nil {
 		return SampleRate

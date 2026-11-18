@@ -497,6 +497,14 @@ func (s *RtpStream) NextPacket(payload []byte, marker bool) RtpHeader {
 	return header
 }
 
+// SkipFrame accounts for a frame that is not sent (DTX silence): the
+// timestamp moves on by one frame and the sequence number does not, so the
+// receiver sees a pause rather than a loss.
+func (s *RtpStream) SkipFrame() {
+	// Source of truth: WA Web VoIP wasm rEjXwUYzMaj (rc.dtx; a shipped Android peer's DTX: timestamps jump, sequence numbers stay contiguous)
+	s.timestamp += s.samplesPerPacket
+}
+
 // NextPreSpeechPacket builds a pre-speech ladder packet (advances seq/timestamp, no marker/latch).
 func (s *RtpStream) NextPreSpeechPacket() RtpHeader {
 	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/41095d4e6ba4610e054e9ede3af1d5e88a83faee/wacore/src/voip/rtp.rs#L235-L247

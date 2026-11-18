@@ -881,7 +881,7 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 		silence := make([]float32, FrameSamples)
 		ticker := time.NewTicker(frameInterval)
 		defer ticker.Stop()
-		var txCount uint64
+		var txCount, ticks uint64
 		sendingOpus := false
 		for {
 			select {
@@ -889,15 +889,16 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 				return
 			case <-ticker.C:
 			}
+			ticks++
 			frame := silence
 			var opusFrame []byte
 			if player, _ := callPlayerSink(call); player != nil {
 				// Drained even while muted, so the source doesn't back up.
-				rate := SampleRate
+				rate, dtx := SampleRate, false
 				if !groupMode.Load() {
-					rate = call.AudioRate()
+					rate, dtx = call.AudioRate(), call.DTX()
 				}
-				if f, encoded := player.nextFrameOpus(rate); f != nil && !call.IsMuted() {
+				if f, encoded := player.nextFrameOpus(rate, dtx); f != nil && !call.IsMuted() {
 					frame, opusFrame = f, encoded
 				}
 			}
@@ -906,6 +907,13 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 			}
 			var payload []byte
 			if call.sendsStandardOpus() && !groupMode.Load() {
+				if skipDTXFrame(call, opusFrame, ticks) {
+					txPipe.SkipAudio()
+					if call != nil {
+						call.stats.dtxSkipped.Add(1)
+					}
+					continue
+				}
 				// The peer decodes this payload type as standard Opus (it is
 				// outside the MLow rollout): MLow bytes would be noise to it.
 				// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/e0225b3a/agent_docs/voip_audio_codecs.md

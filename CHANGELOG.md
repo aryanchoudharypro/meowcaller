@@ -7,6 +7,11 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### audio — DTX send — `implemented`
+
+- When the server's `<voip_settings>` carry `rc.dtx` (every blob in the user's logs has `"1"`), `Call.DTX` reports it and a source implementing the new `AudioDTXListener` is told, so its Opus encoder runs with DTX on. A frame it encodes as DTX silence (at most two bytes) is not sent: the RTP timestamp moves on and the sequence number does not, which is what a shipped Android peer does. For the first `options.enable_additional_dtx_frames_at_call_start_ms` (3000 in the logs) every frame is still sent. `MediaStats.AudioFramesSkippedDTX` counts the skipped frames.
+- Unit tests only; NOT VALIDATED live.
+
 ### audio — super-wideband (24/48 kHz) Opus — `implemented`
 
 - When the server's `<voip_settings>` turn super-wideband on the way WA's engine requires (`options.enable_sampling_rate_overrides` plus non-zero `audio_init.driver_sampling_rate_max`, `conf_bridge.conf_bridge_sampling_rate` and `encode.sampling_rate`, or `audio_dev.force_swb`), the preaccept and accept advertise `<audio enc=opus rate=24000/48000>` next to 16000. An outgoing offer advertises what the last settings allowed. Without those settings nothing changes.

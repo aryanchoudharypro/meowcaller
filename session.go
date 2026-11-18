@@ -297,6 +297,15 @@ func (p *MediaPipeline) ProtectAudio(opusPayload []byte) ([]byte, error) {
 	return out, nil
 }
 
+// SkipAudio leaves one audio frame out of the stream (DTX silence): the next
+// packet's timestamp is one frame later, its sequence number the next one.
+func (p *MediaPipeline) SkipAudio() {
+	// Source of truth: WA Web VoIP wasm rEjXwUYzMaj (rc.dtx)
+	p.sendMu.Lock()
+	defer p.sendMu.Unlock()
+	p.stream.SkipFrame()
+}
+
 // ProtectRTP E2E-SRTP encrypts payload under the send keys for a caller-built RTP header
 // and appends the WARP MI tag. It is the generic form of ProtectAudio used by the video
 // send path, which manages its own PT-97 sequencer (header) per WaCalls.

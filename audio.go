@@ -52,6 +52,14 @@ type AudioRateListener interface {
 	SetAudioRate(rate int)
 }
 
+// AudioDTXListener is an OpusFrameSource whose encoder can run with
+// discontinuous transmission. The call tells it before the next frame once the
+// server's settings ask for DTX (Call.DTX). An encoder with DTX on returns a
+// packet of at most two bytes for a silent frame, which the call does not send.
+type AudioDTXListener interface {
+	SetAudioDTX(on bool)
+}
+
 // AudioSink consumes the 16 kHz mono PCM frames decoded from the peer's audio. Attach
 // one with Call.Receive; built-ins record to a WAV file or forward to a callback. A
 // CGO Speaker() sink lives in the meowcaller/audio/malgo subpackage.

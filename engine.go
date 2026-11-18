@@ -1407,6 +1407,10 @@ func (e *engine) applyVoipSettingsCodec(m *engineCall, node *waBinary.Node, call
 			m.localCodec = selectAudioCodec(vs)
 			m.maxAudioRate = vs.MaxAudioRate()
 			e.lastMaxAudioRate = m.maxAudioRate
+			if m.call != nil {
+				m.call.dtx.Store(vs.DTX)
+				m.call.dtxStartMs.Store(int32(vs.DTXStartMs))
+			}
 			if vs.Enable48kHzRTPClock && m.call != nil {
 				m.call.peerClock48k.Store(true)
 				e.c.log.Info().Str("call_id", callID).
