@@ -22,10 +22,15 @@ import (
 // For a 1:1 call it derives three SRTCP keys: 2/3, 6/7 and 8/9. Each 30-byte
 // result is a libsrtp AES_CM_128_HMAC_SHA1_80 master key and salt.
 //
-// NOT VALIDATED against a live relay: which of the three the relay protects
-// its packets with, and which half of the hop-by-hop key feeds which HKDF step,
-// are not settled by the wasm read so far. HbhSrtcpReceiveCandidates returns
-// every combination; the caller keeps the first one that authenticates.
+// The halves: copy_relay_info (wasm function 13657) keeps the decoded 30-byte
+// <hbh_key> as a 14-byte master salt (bytes 0..14) followed by a 16-byte master
+// key (bytes 14..30), and derive_hbh_srtp_key (11216, via wa_sfu_kdf 11245)
+// runs HKDF(salt 32 zero bytes, ikm master salt, info "<x> salt") to 32 bytes,
+// then HKDF(that, ikm master key, info "<x> key") to 30. whatsapp-rust splits
+// the key 16/14 instead (srtp/hbh.go, pinned by its KAT); no relay packet
+// ever authenticated under that split (3143 rejected in one tester's logs,
+// 2026-11). NOT VALIDATED against a live relay: the WA split is tried first,
+// the earlier guesses after it; the caller keeps the first that authenticates.
 
 // HbhSrtcpVariant is one candidate keying for the relay's RTCP.
 type HbhSrtcpVariant struct {
@@ -65,21 +70,22 @@ func HbhSrtcpReceiveCandidates(hbhKey []byte) []HbhSrtcpVariant {
 		return nil
 	}
 	var out []HbhSrtcpVariant
-	for _, labels := range hbhSrtcpLabels {
-		for _, swapped := range []bool{false, true} {
-			// whatsapp-rust's order: salt step over the 14-byte master salt,
-			// key step over the 16-byte master key.
-			first, second := hbhKey[16:30], hbhKey[0:16]
-			name := labels.name
-			if swapped {
-				first, second = second, first
-				name += "/swapped"
-			}
-			salt, err := util.HKDFSHA256(make([]byte, 32), first, []byte(labels.salt), 32)
+	// Which bytes feed the salt step and which the key step, best first.
+	splits := []struct {
+		suffix    string
+		salt, key []byte
+	}{
+		{"", hbhKey[0:14], hbhKey[14:30]},
+		{"/rust", hbhKey[16:30], hbhKey[0:16]},
+		{"/swapped", hbhKey[0:16], hbhKey[16:30]},
+	}
+	for _, split := range splits {
+		for _, labels := range hbhSrtcpLabels {
+			salt, err := util.HKDFSHA256(make([]byte, 32), split.salt, []byte(labels.salt), 32)
 			if err != nil {
 				continue
 			}
-			master, err := util.HKDFSHA256(salt, second, []byte(labels.key), 30)
+			master, err := util.HKDFSHA256(salt, split.key, []byte(labels.key), 30)
 			if err != nil {
 				continue
 			}
@@ -87,7 +93,7 @@ func HbhSrtcpReceiveCandidates(hbhKey []byte) []HbhSrtcpVariant {
 			if err != nil {
 				continue
 			}
-			out = append(out, HbhSrtcpVariant{Name: name, Keys: keys})
+			out = append(out, HbhSrtcpVariant{Name: labels.name + split.suffix, Keys: keys})
 		}
 	}
 	return out

@@ -7,6 +7,10 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### srtp — relay hop-by-hop RTCP keys — `implemented`
+
+- WA Web's `copy_relay_info` keeps the decoded 30-byte `<hbh_key>` as a 14-byte master salt followed by a 16-byte master key, and `derive_hbh_srtp_key` runs the salt step over the first and the key step over the second. `HbhSrtcpReceiveCandidates` now tries that split first; the whatsapp-rust 16/14 split (under which no relay packet ever authenticated: 3143 rejected in one tester's logs) and its swap stay as fallbacks, 9 keyings in all. `srtp/hbh.go`'s KAT-pinned derivation is unchanged. NOT VALIDATED live: the log line "relay hop-by-hop RTCP authenticated" names the keying that worked.
+
 ### signaling — keypad tones (DTMF) for business calls — `implemented`
 
 - `Call.SendDTMF` sends `<dtmf call-id call-creator tone>` (WA's `serialize_dtmf`) for one of 0-9, `*`, `#`. Like WhatsApp it only works on a call with a business on the Cloud API (`Call.BusinessAPICall`, WA Web's `isCapiCall`); `Call.PeerPlatform` keeps the platform the peer's offer, preaccept or accept reported. ASSUMPTION: that platform is spelled "capi". NOT VALIDATED live.
