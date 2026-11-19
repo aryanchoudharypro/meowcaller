@@ -53,6 +53,10 @@ type MediaStats struct {
 	// RelayEstimatedBitrateBps is the latest bandwidth the relay's REMB says
 	// our uplink carries, 0 until the relay has sent one.
 	RelayEstimatedBitrateBps uint64
+	// PeerDownlinkBitrateBps is the bandwidth the peer last said its own
+	// downlink carries (<relaylatency><te dl_bw>, sent when its video starts),
+	// 0 until it has. WhatsApp's sender starts its video estimate from it.
+	PeerDownlinkBitrateBps uint64
 	// RelayRTCPReceived counts the relay's own hop-by-hop RTCP packets that
 	// authenticated; RelayRTCPRejected those that matched no key.
 	RelayRTCPReceived, RelayRTCPRejected uint32
@@ -112,7 +116,7 @@ type mediaStatsCounters struct {
 	framesConcealed, offPointDropped, inactiveOrSID, standardOpus              atomic.Uint32
 	peerLossPercent                                                            atomic.Uint32
 	peerVideoLossPercent, relayRTCPReceived, relayRTCPRejected, videoResent    atomic.Uint32
-	relayBitrateBps                                                            atomic.Uint64
+	relayBitrateBps, peerDownlinkBps                                           atomic.Uint64
 	carriedAudio, videoRepairs, videoRecovered, videoGapsSkipped               atomic.Uint32
 	videoPacketsSkipped, videoPacketsLate, videoParityMismatched               atomic.Uint32
 	videoRecoveredRejected, dtxSkipped, audioResent                            atomic.Uint32
@@ -160,6 +164,7 @@ func (s *mediaStatsCounters) snapshot() MediaStats {
 		PeerReportedLossPercent:      s.peerLossPercent.Load(),
 		PeerReportedVideoLossPercent: s.peerVideoLossPercent.Load(),
 		RelayEstimatedBitrateBps:     s.relayBitrateBps.Load(),
+		PeerDownlinkBitrateBps:       s.peerDownlinkBps.Load(),
 		RelayRTCPReceived:            s.relayRTCPReceived.Load(),
 		RelayRTCPRejected:            s.relayRTCPRejected.Load(),
 		VideoPacketsResent:           s.videoResent.Load(),

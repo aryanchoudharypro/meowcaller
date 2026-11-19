@@ -1072,6 +1072,29 @@ func (e *engine) onRelay(callID string, data *waBinary.Node) {
 	e.maybeStartMedia(callID)
 }
 
+// notePeerDownlink keeps the downlink bandwidth the peer reports in a
+// <te dl_bw> of its relaylatency (WhatsApp sends one when the call's video
+// starts), for our video sender to start from.
+func (e *engine) notePeerDownlink(m *engineCall, ev *events.CallRelayLatency, rl *waBinary.Node) {
+	// Source of truth: WA Web VoIP wasm rEjXwUYzMaj func 6111 ("wa_one_side_bwe_set_peer_initial_bandwidth ... dl_bw_bps") and func 12281 (parses te dl_bw)
+	e.mu.Lock()
+	call, self := m.call, m.selfLID
+	e.mu.Unlock()
+	if call == nil || ev.From.User == "" || strings.HasPrefix(self, ev.From.User+":") || strings.HasPrefix(self, ev.From.User+"@") {
+		return
+	}
+	for _, te := range rl.GetChildren() {
+		if te.Tag != "te" {
+			continue
+		}
+		if bps := attrUint(&te, "dl_bw"); bps > 0 {
+			call.stats.peerDownlinkBps.Store(uint64(bps))
+			e.c.log.Info().Str("call_id", ev.CallID).Uint32("dl_bw_bps", bps).Msg("peer reported its downlink bandwidth")
+			return
+		}
+	}
+}
+
 // onRelayLatency answers the caller's relaylatency probes (the callee's half of the
 // relay election). It does NOT send the accept — that is deferred until <mute_v2>.
 func (e *engine) onRelayLatency(ev *events.CallRelayLatency) {
@@ -1083,6 +1106,7 @@ func (e *engine) onRelayLatency(ev *events.CallRelayLatency) {
 	if rl == nil {
 		return
 	}
+	e.notePeerDownlink(m, ev, rl)
 	e.mu.Lock()
 	linkProbe := m.group && m.link
 	e.mu.Unlock()

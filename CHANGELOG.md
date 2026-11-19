@@ -7,6 +7,10 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### engine — the peer's downlink bandwidth — `implemented`
+
+- A `<relaylatency><te dl_bw>` from the peer (WhatsApp sends one when the call's video starts) is kept as `MediaStats.PeerDownlinkBitrateBps`, for a video sender to start from, the way WhatsApp's sender seeds its bandwidth estimate (`wa_one_side_bwe_set_peer_initial_bandwidth`). Our own echoed relaylatency is ignored. Unit test only; NOT VALIDATED live.
+
 ### srtp — relay hop-by-hop RTCP keys — `implemented`
 
 - WA Web's `copy_relay_info` keeps the decoded 30-byte `<hbh_key>` as a 14-byte master salt followed by a 16-byte master key, and `derive_hbh_srtp_key` runs the salt step over the first and the key step over the second. `HbhSrtcpReceiveCandidates` now tries that split first; the whatsapp-rust 16/14 split (under which no relay packet ever authenticated: 3143 rejected in one tester's logs) and its swap stay as fallbacks, 9 keyings in all. `srtp/hbh.go`'s KAT-pinned derivation is unchanged. NOT VALIDATED live: the log line "relay hop-by-hop RTCP authenticated" names the keying that worked.
