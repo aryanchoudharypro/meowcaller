@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/purpshell/meowcaller/signaling"
 	"go.mau.fi/whatsmeow/types"
@@ -19,6 +20,46 @@ func (c *Call) RequestPeerMute(ctx context.Context, user string) error {
 // only a call-link call's creator or waiting-room admins can remove people.
 func (c *Call) RemoveParticipant(ctx context.Context, user string) error {
 	return c.eng.removeParticipant(ctx, c.id, user)
+}
+
+// ErrPeerAlreadyMuted is returned by RequestPeerMute when the participant's
+// microphone is already off (WA: "{name} is already muted.").
+var ErrPeerAlreadyMuted = errors.New("meowcaller: participant is already muted")
+
+// ErrMuteRequestPending is returned by RequestPeerMute while an earlier request
+// to the same participant has not been answered yet.
+var ErrMuteRequestPending = errors.New("meowcaller: already asked this participant to mute")
+
+// muteRequestTimeout is how long an unanswered mute request blocks the next one.
+// ASSUMPTION: WA clears mute_requested only on the peer's mute_v2; 10 s keeps a
+// lost answer from blocking the button for the rest of the call.
+const muteRequestTimeout = 10 * time.Second
+
+// ParticipantMuted reports whether a group participant's last mute_v2 said
+// their microphone is off. user is a LID or phone-number JID string.
+func (c *Call) ParticipantMuted(user string) bool {
+	target, err := parseCallTarget(user)
+	if err != nil {
+		return false
+	}
+	c.eng.mu.Lock()
+	defer c.eng.mu.Unlock()
+	m := c.eng.calls[c.id]
+	if m == nil {
+		return false
+	}
+	if p, ok := rosterParticipant(m.groupUpdate, target); ok {
+		return m.participantMuted[p.JID.User] || (!p.PN.IsEmpty() && m.participantMuted[p.PN.User])
+	}
+	return m.participantMuted[target.User]
+}
+
+// OnParticipantMuteState registers a callback fired when a group participant
+// turns their microphone on or off. user is the JID the mute_v2 came from.
+func (c *Call) OnParticipantMuteState(fn func(user types.JID, muted bool)) {
+	c.mu.Lock()
+	c.onParticipantMute = fn
+	c.mu.Unlock()
 }
 
 // CanRemoveParticipants reports whether RemoveParticipant is allowed here.
@@ -61,8 +102,14 @@ func (e *engine) requestPeerMute(ctx context.Context, callID, user string) error
 	if !ok || p.State != "connected" {
 		return fmt.Errorf("meowcaller: %s is not in the call", target.User)
 	}
+	// Source of truth: WA VoIP wasm wa_call_request_peer_mute_in_group_call returns 70020 ("already muted" / "mute request pending").
+	if err := e.claimMuteRequest(callID, p); err != nil {
+		e.c.log.Debug().Err(err).Str("call_id", callID).Str("target", p.JID.ToNonAD().String()).Msg("not asking participant to mute")
+		return err
+	}
 	node := signaling.BuildMuteRequest(callID, p.JID.ToNonAD(), creator, e.nextCallNodeID())
 	if err := e.transmitCallNode(ctx, node); err != nil {
+		e.dropMuteRequest(callID, p.JID.User)
 		e.c.log.Warn().Err(err).Str("call_id", callID).Msg("send mute request failed")
 		return fmt.Errorf("meowcaller: send mute request: %w", err)
 	}
@@ -169,6 +216,79 @@ func (e *engine) onMuteRequest(callID string, from types.JID, state string) {
 			fn(by)
 		}
 	}()
+}
+
+// claimMuteRequest refuses a mute request WA's engine would refuse (70020):
+// the participant is already muted, or was asked a moment ago and hasn't
+// answered. Otherwise it records the request.
+func (e *engine) claimMuteRequest(callID string, p groupCallParticipant) error {
+	// Source of truth: WA VoIP wasm wa_call_request_peer_mute_in_group_call (participant is_muted, mute_requested).
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	m := e.calls[callID]
+	if m == nil {
+		return errors.New("meowcaller: group call is not active")
+	}
+	if m.participantMuted[p.JID.User] || (!p.PN.IsEmpty() && m.participantMuted[p.PN.User]) {
+		return ErrPeerAlreadyMuted
+	}
+	if at, ok := m.muteAskedAt[p.JID.User]; ok && time.Since(at) < muteRequestTimeout {
+		return ErrMuteRequestPending
+	}
+	if m.muteAskedAt == nil {
+		m.muteAskedAt = map[string]time.Time{}
+	}
+	m.muteAskedAt[p.JID.User] = time.Now()
+	return nil
+}
+
+func (e *engine) dropMuteRequest(callID, user string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if m := e.calls[callID]; m != nil {
+		delete(m.muteAskedAt, user)
+	}
+}
+
+// onParticipantMuteV2 records a group participant's mute_v2 and reports
+// whether the stanza was a group participant's (true) rather than a 1:1 peer's.
+// WA's handle_mute_v2 ignores one from our own other device.
+func (e *engine) onParticipantMuteV2(callID string, from types.JID, muted bool) bool {
+	// Source of truth: WA VoIP wasm handle_mute_v2 ("ignoring MuteV2 from self-other-device").
+	e.mu.Lock()
+	m := e.calls[callID]
+	if m == nil || !m.group || m.call == nil {
+		e.mu.Unlock()
+		return false
+	}
+	self, _ := types.ParseJID(m.selfLID)
+	if from.IsEmpty() || from.Server == "call" || from.User == self.User {
+		e.mu.Unlock()
+		e.c.log.Debug().Str("call_id", callID).Msg("ignoring group mute_v2 without a participant sender")
+		return true
+	}
+	user := from.ToNonAD()
+	if p, ok := rosterParticipant(m.groupUpdate, user); ok {
+		user = p.JID.ToNonAD()
+	}
+	if m.participantMuted == nil {
+		m.participantMuted = map[string]bool{}
+	}
+	changed := m.participantMuted[user.User] != muted
+	m.participantMuted[user.User] = muted
+	delete(m.muteAskedAt, user.User)
+	call := m.call
+	e.mu.Unlock()
+	if !changed {
+		return true
+	}
+	call.mu.Lock()
+	fn := call.onParticipantMute
+	call.mu.Unlock()
+	if fn != nil {
+		fn(user, muted)
+	}
+	return true
 }
 
 // rosterParticipant finds target in the call's roster by LID or phone number.

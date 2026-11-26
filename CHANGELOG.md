@@ -7,6 +7,14 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### engine — group mute requests like WA — `implemented`
+
+- Each group participant's `mute_v2` is now tracked (`Call.ParticipantMuted`, `Call.OnParticipantMuteState`); one from our own other device is ignored, as WA's `handle_mute_v2` does. `RequestPeerMute` refuses, like WA's 70020, a participant who is already muted (`ErrPeerAlreadyMuted`) or was asked less than 10 s ago and hasn't answered (`ErrMuteRequestPending`). Unit tests only; NOT VALIDATED live.
+
+### engine — codec from the group call ack — `implemented`
+
+- A group call we place or join now takes its codec from the `<voip_settings>` in the server's ack, so it starts on Opus or MLow as the server says instead of learning it from the first participant's packets. Unit tests only; NOT VALIDATED live.
+
 ### engine — Opus in group calls — `implemented`
 
 - Group calls always sent MLow, even when the server's voip_settings say `use_mlow_codec_v1` is off and the participants send standard Opus on the shared payload type, so the others heard nothing (a tester: "my audio isn't going in group calls"). A group offer's voip_settings now pick the codec as a 1:1 call's do, and a participant seen sending standard Opus switches our send to Opus too. Unit tests only; NOT VALIDATED live.

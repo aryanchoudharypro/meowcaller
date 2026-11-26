@@ -135,6 +135,11 @@ type engineCall struct {
 	heartbeatCancel  context.CancelFunc
 	inviteSelfDevice groupCallDevice
 	invitePeerDevice groupCallDevice
+	// participantMuted is each group participant's last mute_v2 state, by user;
+	// muteAskedAt is when we last asked that user to mute, cleared by their
+	// next mute_v2 (WA's participant is_muted and mute_requested).
+	participantMuted map[string]bool
+	muteAskedAt      map[string]time.Time
 
 	// answered is set by the first Answer. WA Web takes only the first press
 	// of Accept or Decline (one in-flight ref guards both buttons); an
@@ -1614,6 +1619,28 @@ func (e *engine) resolveAudioCodec(m *engineCall, callID string) {
 	}
 }
 
+// applyGroupAckVoipSettings takes the codec from the <voip_settings> of the
+// server's ack to a group call we placed or joined, so the call starts on the
+// right codec instead of learning it from the first participant's packets.
+// Only that child is read: the ack's <capability> nodes are the roster's,
+// ours among them, not the peer's.
+func (e *engine) applyGroupAckVoipSettings(callID string, ack *waBinary.Node) {
+	// Source of truth: https://github.com/oxidezap/whatspec/blob/46f630441389e703e04ff3fc012192cf80fdd4ba/generated/wasm.lock.json#L1-L4
+	vs := findChild(ack, "voip_settings")
+	if callID == "" || vs == nil {
+		return
+	}
+	only := &waBinary.Node{Tag: ack.Tag, Content: []waBinary.Node{*vs}}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	m := e.calls[callID]
+	if m == nil {
+		e.c.log.Debug().Str("call_id", callID).Msg("group call ack voip_settings for an unknown call")
+		return
+	}
+	e.applyVoipSettingsCodec(m, only, callID)
+}
+
 // onCallAck handles an <ack class="call"> node. For an outbound offer the relay
 // allocation arrives here (whatsmeow otherwise drops the ack), which is what lets the
 // caller bring up media. An error ack tears the call down.
@@ -1634,6 +1661,7 @@ func (e *engine) onCallAck(ack *waBinary.Node) {
 	}
 	if isGroup {
 		// Source of truth: https://github.com/purpshell/meowcaller/blob/7cb6045001dafd2514f53e85cd8c3e419c13adbe/datasheets/voip-initial-group-call.md#L27-L33
+		e.applyGroupAckVoipSettings(groupUpdate.CallID, ack)
 		e.applyGroupUpdate(groupCallUpdateFromSignaling(*groupUpdate))
 		return
 	}
@@ -1787,6 +1815,9 @@ func (e *engine) onCallRaw(callNode *waBinary.Node) bool {
 		}
 		muteState := mv.String("mute-state")
 		muted := muteState == "1"
+		if e.onParticipantMuteV2(callID, callNode.AttrGetter().OptionalJIDOrEmpty("from"), muted) {
+			return false
+		}
 		e.mu.Lock()
 		m := e.calls[callID]
 		e.mu.Unlock()

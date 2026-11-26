@@ -94,3 +94,55 @@ func TestWaitingRoomAdminCanRemove(t *testing.T) {
 		t.Fatal("a waiting-room admin can't remove")
 	}
 }
+
+func TestMuteRequestRefusedWhenMutedOrPending(t *testing.T) {
+	eng, call, _ := activeGroupCall(t)
+	sends := 0
+	eng.sendCallNode = func(context.Context, waBinary.Node) error { sends++; return nil }
+	if err := call.RequestPeerMute(context.Background(), peerJID().String()); err != nil {
+		t.Fatal(err)
+	}
+	if err := call.RequestPeerMute(context.Background(), peerJID().String()); err != ErrMuteRequestPending {
+		t.Fatalf("second request: %v, want pending", err)
+	}
+	changes := make(chan bool, 2)
+	call.OnParticipantMuteState(func(user types.JID, muted bool) {
+		if user.User == peerJID().User {
+			changes <- muted
+		}
+	})
+	if !eng.onParticipantMuteV2("GCALL", peerJID(), true) {
+		t.Fatal("group mute_v2 not taken as a participant's")
+	}
+	if !call.ParticipantMuted(peerJID().String()) || !<-changes {
+		t.Fatal("participant not marked muted")
+	}
+	if err := call.RequestPeerMute(context.Background(), peerJID().String()); err != ErrPeerAlreadyMuted {
+		t.Fatalf("request to a muted participant: %v", err)
+	}
+	eng.onParticipantMuteV2("GCALL", peerJID(), false)
+	if call.ParticipantMuted(peerJID().String()) || <-changes {
+		t.Fatal("participant still muted")
+	}
+	if err := call.RequestPeerMute(context.Background(), peerJID().String()); err != nil {
+		t.Fatal(err)
+	}
+	if sends != 2 {
+		t.Fatalf("sent %d mute requests, want 2", sends)
+	}
+}
+
+func TestGroupAckVoipSettingsPickCodec(t *testing.T) {
+	eng, call, _ := activeGroupCall(t)
+	m := eng.calls["GCALL"]
+	m.localCodec, m.codec = AudioCodecMlow, AudioCodecMlow
+	call.negotiatedOpus.Store(false)
+	ack := &waBinary.Node{Tag: "ack", Content: []waBinary.Node{
+		{Tag: "group_info"},
+		{Tag: "voip_settings", Attrs: waBinary.Attrs{"uncompressed": "1"}, Content: []byte(`{"options":{"use_mlow_codec_v1":"false"}}`)},
+	}}
+	eng.applyGroupAckVoipSettings("GCALL", ack)
+	if m.codec != AudioCodecOpus || !call.sendsStandardOpus() {
+		t.Fatalf("codec %v after the group ack, want opus", m.codec)
+	}
+}

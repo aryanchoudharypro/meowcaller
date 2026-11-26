@@ -20,24 +20,25 @@ type Call struct {
 	id   string
 	peer types.JID
 
-	mu             sync.Mutex
-	phase          CallPhase
-	player         *Player
-	sink           AudioSink
-	onReady        func()
-	onEnd          func(reason string)
-	onState        func(CallPhase)
-	onPeerAccept   func()
-	peerAccepted   bool
-	acceptNotified bool
-	onMuteState    func(muted bool)
-	onInterrupt    func(interrupted bool)
-	onBatteryLow   func()
-	onMuteRequest  func(by types.JID)
-	muted          bool
-	muteMu         sync.Mutex
-	stats          mediaStatsCounters
-	health         audioHealthWatch
+	mu                sync.Mutex
+	phase             CallPhase
+	player            *Player
+	sink              AudioSink
+	onReady           func()
+	onEnd             func(reason string)
+	onState           func(CallPhase)
+	onPeerAccept      func()
+	peerAccepted      bool
+	acceptNotified    bool
+	onMuteState       func(muted bool)
+	onInterrupt       func(interrupted bool)
+	onBatteryLow      func()
+	onMuteRequest     func(by types.JID)
+	onParticipantMute func(user types.JID, muted bool)
+	muted             bool
+	muteMu            sync.Mutex
+	stats             mediaStatsCounters
+	health            audioHealthWatch
 	// negotiatedOpus mirrors the signaling's codec choice; peerSendsOpus is
 	// set once the peer's own packets settle as standard Opus. Either means
 	// the peer decodes the shared payload type as Opus.
