@@ -7,6 +7,10 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### engine — tell each group participant our mute state — `implemented`
+
+- In a tester's group call the person who joined after us heard the others but never us. The phones send `mute_v2` to every participant whose audio stream they set up (WA's `create_and_connect_audio_stream_for_participant` -> `wa_system_make_and_send_mute_v2_msg`), and re-send it whenever someone new connects; we sent none. We now send our mute state to each participant as they connect, and a mute toggle in a group call goes to each connected participant instead of `<call-id>@call`. Unit tests only; NOT VALIDATED live.
+
 ### engine — group mute requests like WA — `implemented`
 
 - Each group participant's `mute_v2` is now tracked (`Call.ParticipantMuted`, `Call.OnParticipantMuteState`); one from our own other device is ignored, as WA's `handle_mute_v2` does. `RequestPeerMute` refuses, like WA's 70020, a participant who is already muted (`ErrPeerAlreadyMuted`) or was asked less than 10 s ago and hasn't answered (`ErrMuteRequestPending`). Unit tests only; NOT VALIDATED live.

@@ -140,6 +140,9 @@ type engineCall struct {
 	// next mute_v2 (WA's participant is_muted and mute_requested).
 	participantMuted map[string]bool
 	muteAskedAt      map[string]time.Time
+	// muteAnnounced is the connected participants (by user) we have told our
+	// mute state since they connected.
+	muteAnnounced map[string]bool
 
 	// answered is set by the first Answer. WA Web takes only the first press
 	// of Accept or Decline (one in-flight ref guards both buttons); an

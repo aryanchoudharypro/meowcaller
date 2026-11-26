@@ -35,6 +35,9 @@ func (e *engine) onUnknownCallEvent(node *waBinary.Node) {
 		// must not replay its (older) carrying roster's rekey request. The fan-out
 		// goes to the committed, PID-stabilized participants.
 		committed, outcome := e.applyGroupUpdate(update)
+		if outcome == groupUpdateApplied {
+			e.announceMuteToNewPeers(update.CallID)
+		}
 		if outcome == groupUpdateApplied && update.RekeyRequested {
 			if fanoutErr := e.distributeRequestedGroupEpoch(context.Background(), committed); fanoutErr != nil {
 				e.c.log.Warn().Err(fanoutErr).Str("call_id", update.CallID).Msg("group rekey fanout failed")

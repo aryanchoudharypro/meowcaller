@@ -146,3 +146,29 @@ func TestGroupAckVoipSettingsPickCodec(t *testing.T) {
 		t.Fatalf("codec %v after the group ack, want opus", m.codec)
 	}
 }
+
+func TestNewParticipantIsToldOurMuteState(t *testing.T) {
+	eng, _, _ := activeGroupCall(t)
+	var sent []string
+	eng.sendCallNode = func(_ context.Context, node waBinary.Node) error {
+		to, _ := node.Attrs["to"].(types.JID)
+		kid := node.GetChildren()[0]
+		sent = append(sent, kid.Tag+">"+to.User+":"+kid.AttrGetter().OptionalString("mute-state"))
+		return nil
+	}
+	m := eng.calls["GCALL"]
+	m.selfLID = "111@lid"
+	m.groupUpdate.Participants = []groupCallParticipant{
+		{JID: types.NewJID("111", types.HiddenUserServer), State: "connected"},
+		{JID: peerJID(), State: "connected"},
+		{JID: creatorJID(), State: "invited"},
+	}
+	eng.announceMuteToNewPeers("GCALL")
+	if len(sent) != 1 || sent[0] != "mute_v2>"+peerJID().User+":0" {
+		t.Fatalf("sent %v", sent)
+	}
+	eng.announceMuteToNewPeers("GCALL")
+	if len(sent) != 1 {
+		t.Fatalf("told the same participant twice: %v", sent)
+	}
+}
