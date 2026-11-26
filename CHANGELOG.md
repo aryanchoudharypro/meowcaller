@@ -7,6 +7,10 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### engine — Opus in group calls — `implemented`
+
+- Group calls always sent MLow, even when the server's voip_settings say `use_mlow_codec_v1` is off and the participants send standard Opus on the shared payload type, so the others heard nothing (a tester: "my audio isn't going in group calls"). A group offer's voip_settings now pick the codec as a 1:1 call's do, and a participant seen sending standard Opus switches our send to Opus too. Unit tests only; NOT VALIDATED live.
+
 ### engine — retry the first relay connection — `implemented`
 
 - When no relay is reachable at call start, the connection is tried again after 1, 2 and 3 s (a group call re-reads its newest allocation first), the way WA's engine retries relay binds. If every try fails the call ends with `connection_lost` and a `media_rx_timeout` terminate instead of sitting on connecting until the user leaves. Unit tests only; NOT VALIDATED live.

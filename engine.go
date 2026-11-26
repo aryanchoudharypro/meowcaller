@@ -830,6 +830,9 @@ func (e *engine) onGroupOffer(ev *events.CallOffer, update groupCallUpdate) {
 	m.localVideo = isVideo
 	m.remoteVideo = isVideo
 	creator := m.creator
+	// The group offer's voip_settings say whether the call uses MLow
+	// (use_mlow_codec_v1); without this a group call always sent MLow.
+	e.applyVoipSettingsCodec(m, ev.Data, ev.CallID)
 	e.mu.Unlock()
 	e.applyGroupUpdate(update)
 

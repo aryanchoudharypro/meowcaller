@@ -994,8 +994,8 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 				continue
 			}
 			var payload []byte
-			if call.sendsStandardOpus() && !groupMode.Load() {
-				if skipDTXFrame(call, opusFrame, ticks) {
+			if call.sendsStandardOpus() {
+				if !groupMode.Load() && skipDTXFrame(call, opusFrame, ticks) {
 					txPipe.SkipAudio()
 					if call != nil {
 						call.stats.dtxSkipped.Add(1)
@@ -1353,8 +1353,13 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 			if audio.StandardOpus {
 				call.stats.standardOpus.Add(1)
 			}
-			if audio.StandardOpusSettled && !groupMode.Load() {
+			// In a group call too: everyone shares one payload type, so a
+			// participant sending standard Opus decodes it as standard Opus.
+			if audio.StandardOpusSettled && !call.peerSendsOpus.Load() {
 				call.peerSendsOpus.Store(true)
+				if groupMode.Load() {
+					log.Info().Str("call_id", callID).Msg("a participant sends standard Opus; sending Opus to the group")
+				}
 			}
 			// A SID is the peer TELLING us it is silent, and the decoder
 			// handled it: a muted peer is a healthy stream. Counted as
