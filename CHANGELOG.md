@@ -7,6 +7,12 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### engine — group calls on native relay blocks — `implemented`
+
+- A group relay allocation whose `<te2>` records carry a `protocol` attribute (the native-transport block this client gets) is now dialed over plain UDP, as the 1:1 offer's block already was. Before, group calls always took the DTLS/SCTP DataChannel path: DTLS finished, the relay never answered SCTP INIT, and after 12 s the call gave up with "no relay reachable" while the app sat on connecting (a tester's logs, 2026-11-26: every group call failed this way, every 1:1 call worked). `GroupCallRelayEndpoint.HasProtocol` records the attribute. A relay dial that finishes after its timeout is now closed instead of left running.
+- A `lightweight="1"` group offer with a `<silence>` child (e.g. `vc_wave_all`) is no longer preaccepted (the server answered 403 and a terminate); like WA's `preprocess_offer` ("sending missed call event for lightweight silent offer") it only becomes a joinable call when its roster allows.
+- Unit tests only; NOT VALIDATED live.
+
 ### engine — the peer's downlink bandwidth — `implemented`
 
 - A `<relaylatency><te dl_bw>` from the peer (WhatsApp sends one when the call's video starts) is kept as `MediaStats.PeerDownlinkBitrateBps`, for a video sender to start from, the way WhatsApp's sender seeds its bandwidth estimate (`wa_one_side_bwe_set_peer_initial_bandwidth`). Our own echoed relaylatency is ignored. Unit test only; NOT VALIDATED live.

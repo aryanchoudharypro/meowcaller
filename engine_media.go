@@ -338,8 +338,18 @@ func (e *engine) dialRelay(ctx context.Context, ep *relayEndpoint) (*relay.Relay
 		}
 		ch = r.ch
 	case <-time.After(12 * time.Second):
-		return nil, fmt.Errorf("relay connect timed out (DTLS didn't complete)")
+		go func() {
+			if r := <-done; r.ch != nil {
+				_ = r.ch.Close()
+			}
+		}()
+		return nil, fmt.Errorf("relay connect timed out (DTLS/SCTP didn't complete)")
 	case <-ctx.Done():
+		go func() {
+			if r := <-done; r.ch != nil {
+				_ = r.ch.Close()
+			}
+		}()
 		return nil, ctx.Err()
 	}
 	if ch.IsRaw() {

@@ -299,3 +299,30 @@ func TestGroupRelayAllocateStateResendsWhenTheScreenShareChanges(t *testing.T) {
 		t.Fatal("stopping a share did not re-send the allocation")
 	}
 }
+
+func TestGroupRelayDataDialsNativeBlocksOverPlainUDP(t *testing.T) {
+	endpoints := func(native bool) []groupCallRelayEndpoint {
+		return []groupCallRelayEndpoint{
+			{RelayName: "del3c01", HasProtocol: native, IPv4: "192.0.2.50", Port: 3478},
+			{RelayName: "del3c01", IPv4: "192.0.2.50", Port: 3478},
+		}
+	}
+	for _, native := range []bool{true, false} {
+		update := groupCallUpdate{Relay: &groupCallRelay{
+			Key: []byte{1}, Tokens: [][]byte{{2}}, Endpoints: endpoints(native),
+		}}
+		rd, err := groupRelayData(update, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, ep := range rd.endpoints {
+			if ep.plainUDP != native {
+				t.Fatalf("native=%v: endpoint plainUDP=%v", native, ep.plainUDP)
+			}
+		}
+		target, _, ok := selectGroupRelayEndpoint(nil, rd)
+		if !ok || target.plainUDP != native {
+			t.Fatalf("native=%v: selected plainUDP=%v ok=%v", native, target.plainUDP, ok)
+		}
+	}
+}

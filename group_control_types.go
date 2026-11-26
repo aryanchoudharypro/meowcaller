@@ -64,6 +64,7 @@ type groupCallRelayEndpoint struct {
 	AuthTokenID uint32
 	RelayName   string
 	IsFNA       bool
+	HasProtocol bool
 	IPv4        string
 	Port        uint16
 }
@@ -153,7 +154,8 @@ func groupCallUpdateFromSignaling(update signaling.GroupCallUpdate) groupCallUpd
 			out.Relay.Endpoints[i] = groupCallRelayEndpoint{
 				RelayID: endpoint.RelayID, TokenID: endpoint.TokenID,
 				AuthTokenID: endpoint.AuthTokenID, RelayName: endpoint.RelayName,
-				IsFNA: endpoint.IsFNA, IPv4: endpoint.IPv4, Port: endpoint.Port,
+				IsFNA: endpoint.IsFNA, HasProtocol: endpoint.HasProtocol,
+				IPv4: endpoint.IPv4, Port: endpoint.Port,
 			}
 		}
 	}

@@ -699,6 +699,15 @@ func (e *engine) onOffer(ev *events.CallOffer) {
 		}
 		return
 	}
+	// A lightweight offer carrying <silence> (e.g. reason vc_wave_all) is a
+	// silent notice that a group call started. WA's engine turns it into a
+	// missed-call event and never preaccepts it; the server answers a
+	// preaccept with error 403 and a terminate. The call can still be joined.
+	if isGroup && isSilentLightweightOffer(ev.Data) {
+		e.c.log.Info().Str("call_id", ev.CallID).Msg("silent lightweight group offer; recording it as joinable")
+		e.noteOfflineJoinable(ev, groupCallUpdateFromSignaling(*groupSnapshot))
+		return
+	}
 	if isGroup {
 		e.onGroupOffer(ev, groupCallUpdateFromSignaling(*groupSnapshot))
 		return
@@ -785,6 +794,17 @@ func (e *engine) onOffer(ev *events.CallOffer) {
 	if fn := e.c.incomingCallHandler(); fn != nil {
 		fn(call)
 	}
+}
+
+// isSilentLightweightOffer reports whether an offer is lightweight="1" with a
+// <silence> child.
+func isSilentLightweightOffer(offer *waBinary.Node) bool {
+	// Source of truth: https://github.com/oxidezap/whatspec/blob/46f630441389e703e04ff3fc012192cf80fdd4ba/generated/wasm.lock.json#L1-L4
+	if offer == nil || offer.AttrGetter().OptionalString("lightweight") != "1" {
+		return false
+	}
+	_, ok := offer.GetOptionalChildByTag("silence")
+	return ok
 }
 
 func (e *engine) onGroupOffer(ev *events.CallOffer, update groupCallUpdate) {

@@ -116,6 +116,9 @@ type GroupCallRelayEndpoint struct {
 	DomainName  string
 	RTT         uint32
 	IsFNA       bool
+	// HasProtocol is set when the record carries a protocol attribute, which
+	// only native-transport relay blocks do.
+	HasProtocol bool
 	Address     []byte
 	IPv4        string
 	Port        uint16
@@ -503,6 +506,7 @@ func parseGroupRelayEndpoint(node *waBinary.Node) (GroupCallRelayEndpoint, error
 		RelayName: attrs.String("relay_name"), DomainName: attrs.OptionalString("domain_name"),
 		IsFNA: attrs.OptionalString("is_fna") == "1", Address: bytes.Clone(nodeBytes(node)),
 	}
+	_, endpoint.HasProtocol = node.Attrs["protocol"]
 	if len(endpoint.Address) == net.IPv4len+2 {
 		endpoint.IPv4 = net.IP(endpoint.Address[:net.IPv4len]).String()
 		endpoint.Port = binary.BigEndian.Uint16(endpoint.Address[net.IPv4len:])

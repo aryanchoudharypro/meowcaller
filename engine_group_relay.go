@@ -204,6 +204,13 @@ func groupRelayData(update groupCallUpdate, inbound bool) (*relayData, error) {
 		relayKeyASCII: bytes.Clone(groupRelay.Key),
 		relayTokens:   cloneByteSlices(groupRelay.Tokens),
 	}
+	// A native-transport group block (records with a protocol attribute) is
+	// dialed over plain UDP, like the 1:1 one in parseRelayData. Seen live
+	// 2026-11-26: on these blocks DTLS finished and SCTP INIT was never
+	// answered, so every group call sat on "connecting" and then gave up.
+	native := slices.ContainsFunc(groupRelay.Endpoints, func(endpoint groupCallRelayEndpoint) bool {
+		return endpoint.HasProtocol
+	})
 	for _, endpoint := range groupRelay.Endpoints {
 		if endpoint.IPv4 == "" || endpoint.Port == 0 {
 			continue
@@ -213,6 +220,7 @@ func groupRelayData(update groupCallUpdate, inbound bool) (*relayData, error) {
 			tokenID: endpoint.TokenID, authTokenID: endpoint.AuthTokenID,
 			isFNA:     endpoint.IsFNA,
 			addresses: []relayAddress{{ipv4: endpoint.IPv4, port: endpoint.Port}},
+			plainUDP:  native,
 		})
 	}
 	if getMediaRelayEndpoint(rd, inbound) == nil {

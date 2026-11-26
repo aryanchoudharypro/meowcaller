@@ -183,6 +183,10 @@ func TestParseGroupUpdatePreservesRosterRelayAndRekeyDirective(t *testing.T) {
 						"relay_id": "3", "token_id": "0", "auth_token_id": "0",
 						"relay_name": "zrh1c01", "c2r_rtt": "24", "is_fna": "0",
 					}, Content: []byte{1, 2, 3, 4, 0x1f, 0x90}},
+					{Tag: "te2", Attrs: waBinary.Attrs{
+						"relay_id": "3", "token_id": "0", "auth_token_id": "0",
+						"relay_name": "zrh1c01", "protocol": "1",
+					}, Content: []byte{1, 2, 3, 4, 0x1f, 0x90}},
 				},
 			},
 		},
@@ -201,7 +205,8 @@ func TestParseGroupUpdatePreservesRosterRelayAndRekeyDirective(t *testing.T) {
 	if !update.Participants[0].Guest || update.Participants[0].PushName != "Test Guest" {
 		t.Fatalf("participant = %+v, want a named guest", update.Participants[0])
 	}
-	if update.Relay == nil || update.Relay.SelfPID != 11 || len(update.Relay.Endpoints) != 1 ||
+	if update.Relay == nil || update.Relay.SelfPID != 11 || len(update.Relay.Endpoints) != 2 ||
+		update.Relay.Endpoints[0].HasProtocol || !update.Relay.Endpoints[1].HasProtocol ||
 		update.Relay.Endpoints[0].RelayID != 3 || update.Relay.Endpoints[0].IPv4 != "1.2.3.4" ||
 		update.Relay.Endpoints[0].Port != 8080 {
 		t.Fatalf("relay = %+v", update.Relay)
