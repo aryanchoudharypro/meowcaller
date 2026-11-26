@@ -253,6 +253,58 @@ collect:
 	return f, nil
 }
 
+// connectWithRetry makes the first relay connection, trying again after
+// relayRedialBackoff when no relay is reachable, as WA's engine retries its
+// relay binds (tp->max_bind_retries) instead of leaving the call connecting.
+// A group call re-reads its newest allocation before each try, since the
+// server may have moved it to another relay meanwhile.
+func (e *engine) connectWithRetry(ctx context.Context, callID string, rd *relayData, streamSsrcs [9]uint32, screen stun.WasmScreenShareStream, inbound, isGroup bool) (*relayFanout, *relayData, error) {
+	// Source of truth: https://github.com/oxidezap/whatspec/blob/46f630441389e703e04ff3fc012192cf80fdd4ba/generated/wasm.lock.json#L1-L4
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		if attempt > 0 && isGroup {
+			if latest := e.latestGroupRelay(callID, inbound); latest != nil {
+				rd = latest
+			}
+		}
+		ch, err := e.connectAndAllocateAll(ctx, rd, streamSsrcs, screen, inbound, !isGroup)
+		if err == nil {
+			return ch, rd, nil
+		}
+		lastErr = err
+		if attempt >= len(relayRedialBackoff) {
+			return nil, rd, lastErr
+		}
+		e.c.log.Info().Err(err).Str("call_id", callID).Int("attempt", attempt+1).Msg("relay connect failed; retrying")
+		select {
+		case <-ctx.Done():
+			return nil, rd, ctx.Err()
+		case <-time.After(relayRedialBackoff[attempt]):
+		}
+	}
+}
+
+// latestGroupRelay returns the call's newest group allocation as relay data,
+// or nil when there is none.
+func (e *engine) latestGroupRelay(callID string, inbound bool) *relayData {
+	e.mu.Lock()
+	m := e.calls[callID]
+	var update *groupCallUpdate
+	if m != nil && m.groupUpdate != nil {
+		u := *m.groupUpdate
+		update = &u
+	}
+	e.mu.Unlock()
+	if update == nil {
+		return nil
+	}
+	rd, err := groupRelayData(*update, inbound)
+	if err != nil {
+		return nil
+	}
+	return rd
+}
+
 // connectOneRelay opens the relay DataChannel and sends the STUN allocate for a
 // single endpoint, returning the channel and the allocate bytes (re-sent by the
 // keepalive).
@@ -463,8 +515,12 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 		})
 	}
 
-	ch, err := e.connectAndAllocateAll(ctx, rd, streamSsrcs, screenStream, inbound, !isGroup)
+	ch, rd, err := e.connectWithRetry(ctx, callID, rd, streamSsrcs, screenStream, inbound, isGroup)
 	if err != nil {
+		if ctx.Err() == nil {
+			e.c.log.Warn().Err(err).Str("call_id", callID).Msg("no relay connected after retries; ending call")
+			e.endLostCall(callID)
+		}
 		return err
 	}
 	defer ch.Close()

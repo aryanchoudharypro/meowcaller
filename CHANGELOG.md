@@ -7,6 +7,10 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### engine — retry the first relay connection — `implemented`
+
+- When no relay is reachable at call start, the connection is tried again after 1, 2 and 3 s (a group call re-reads its newest allocation first), the way WA's engine retries relay binds. If every try fails the call ends with `connection_lost` and a `media_rx_timeout` terminate instead of sitting on connecting until the user leaves. Unit tests only; NOT VALIDATED live.
+
 ### engine — group calls on native relay blocks — `implemented`
 
 - A group relay allocation whose `<te2>` records carry a `protocol` attribute (the native-transport block this client gets) is now dialed over plain UDP, as the 1:1 offer's block already was. Before, group calls always took the DTLS/SCTP DataChannel path: DTLS finished, the relay never answered SCTP INIT, and after 12 s the call gave up with "no relay reachable" while the app sat on connecting (a tester's logs, 2026-11-26: every group call failed this way, every 1:1 call worked). `GroupCallRelayEndpoint.HasProtocol` records the attribute. A relay dial that finishes after its timeout is now closed instead of left running.
