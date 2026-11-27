@@ -7,9 +7,9 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
-### p2p — web peer-to-peer call path datasheet — `planned`
+### p2p — web peer-to-peer call path — `scaffolded`
 
-- Datasheet `datasheets/web-p2p.md`: WA Web's direct path (ICE, DTLS, `wa-web-p2p` SCTP channel, `<transport transport-message-type="13">` with ice-ufrag/ice-pwd, `<te>` candidates and `<certificate>`), gated on Protect IP being off and the server's call settings. Reference pin UNMAPPED (whatsapp-rust has no web P2P); no vector yet. No code.
+- Datasheet `datasheets/web-p2p.md`: WA Web's direct path (ICE, DTLS, `wa-web-p2p` SCTP channel, `<transport transport-message-type="13">` with ice-ufrag/ice-pwd, `<te>` candidates and `<certificate>`), gated on Protect IP being off and the server's call settings. Reference pin UNMAPPED (whatsapp-rust has no web P2P); no vector yet. Scaffolded: `signaling.BuildWebP2PTransport`/`ParseWebP2PTransport` and package `p2p` (`Allowed`, `Dial`, `Conn`), bodies are stubs; KATs skipped (no vector).
 
 ### signaling/engine — group relaylatency answers carry the relay transaction — `implemented`
 
