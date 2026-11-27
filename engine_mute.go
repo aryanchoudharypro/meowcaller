@@ -194,5 +194,16 @@ func (e *engine) announceMuteToNewPeers(callID string) {
 			continue
 		}
 		e.c.log.Info().Str("call_id", callID).Str("to", peer.String()).Str("mute_state", state).Msg("told new participant our mute state")
+		// Phones also send each participant they connect to a type-4
+		// transport naming their network, which the peer's bandwidth
+		// estimate reads (wa_transport_p2p_set_peer_net_medium).
+		msgType := "4"
+		transport := signaling.BuildTransport(&signaling.TransportParams{
+			CallID: callID, To: peer, CallCreator: creator, TransportMessageType: &msgType,
+		})
+		transport.Attrs["id"] = e.nextCallNodeID()
+		if err := e.transmitCallNode(context.Background(), transport); err != nil {
+			e.c.log.Debug().Err(err).Str("call_id", callID).Str("to", peer.String()).Msg("send network medium to new participant failed")
+		}
 	}
 }

@@ -153,6 +153,10 @@ func TestNewParticipantIsToldOurMuteState(t *testing.T) {
 	eng.sendCallNode = func(_ context.Context, node waBinary.Node) error {
 		to, _ := node.Attrs["to"].(types.JID)
 		kid := node.GetChildren()[0]
+		if kid.Tag == "transport" {
+			sent = append(sent, kid.Tag+">"+to.User+":"+kid.AttrGetter().OptionalString("transport-message-type"))
+			return nil
+		}
 		sent = append(sent, kid.Tag+">"+to.User+":"+kid.AttrGetter().OptionalString("mute-state"))
 		return nil
 	}
@@ -164,11 +168,11 @@ func TestNewParticipantIsToldOurMuteState(t *testing.T) {
 		{JID: creatorJID(), State: "invited"},
 	}
 	eng.announceMuteToNewPeers("GCALL")
-	if len(sent) != 1 || sent[0] != "mute_v2>"+peerJID().User+":0" {
+	if len(sent) != 2 || sent[0] != "mute_v2>"+peerJID().User+":0" || sent[1] != "transport>"+peerJID().User+":4" {
 		t.Fatalf("sent %v", sent)
 	}
 	eng.announceMuteToNewPeers("GCALL")
-	if len(sent) != 1 {
+	if len(sent) != 2 {
 		t.Fatalf("told the same participant twice: %v", sent)
 	}
 }

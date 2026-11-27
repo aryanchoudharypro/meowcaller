@@ -7,6 +7,10 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### engine — tell each group participant our network — `implemented`
+
+- Phones send every participant they connect to in a group call a `<transport transport-message-type="4">` with their `<net medium>`, which the peer's bandwidth estimate reads; we sent none. We now send it alongside our mute state as each participant connects. Unit tests only; NOT VALIDATED live.
+
 ### engine — camera on/off in a group call the WA way — `implemented`
 
 - In a group call we turned video on with the 1:1 upgrade (state 11, `voip_settings="video"`), which the server ignored, and off with state 0, which it refused with a 403. WA's engine (`call_video_request_upgrade` / `call_video_downgrade`) sends the plain upgrade request (state 3) in a group call and turns its own video on straight away, and sends no stanza at all when video goes off. We now do the same. Unit tests only; NOT VALIDATED live.
