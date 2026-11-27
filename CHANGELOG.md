@@ -7,6 +7,10 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### p2p — native P2P — `scaffolded`
+
+- `p2p/native.go`: `NativeKey`, `IsNativePeerMsg`, `BuildNativeBind`, `VerifyNativeBind`, `DialNative` / `NativeConn` envelopes with stub bodies and suggestions from `datasheets/native-p2p.md`. KAT skipped: no vector.
+
 ### p2p — native P2P datasheet — `planned`
 
 - `datasheets/native-p2p.md`: WA's native direct path read from the VoIP wasm (two STUN modes, the `0x74616877` peer cookie, the legacy bind builder keyed with the 16-byte P2P key). No vector; pin `UNMAPPED`.
