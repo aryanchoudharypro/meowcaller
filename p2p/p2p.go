@@ -44,11 +44,15 @@ type Conn struct {
 
 // Allowed reports whether a call may try the direct path.
 func Allowed(isGroup, protectIP, callerIsContact, isCaller bool, settings VoipSettings) bool {
-	// Source of truth: WAWebVoipHandleNativeCallEvent initP2PConnectionIfEnabled + wasm is_p2p_disabled (func 14242), 2.3000.1056418802; see datasheets/web-p2p.md
-	// TODO
-	// agent suggestion: false for a group call, when protectIP (disallow_all_p2p) is on, when settings.DisableP2P or !settings.EnableWebP2P, and on the callee side when the caller is not a contact; true otherwise.
-	// human input:
-	return false
+	// Source of truth: https://github.com/aryanchoudharypro/meowcaller/blob/b5c612d74da96f9ae704b9df4b3b0b9a6acfa028/datasheets/web-p2p.md#L42
+	// Source of truth: https://github.com/aryanchoudharypro/meowcaller/blob/b5c612d74da96f9ae704b9df4b3b0b9a6acfa028/datasheets/web-p2p.md#L80-L83
+	switch {
+	case isGroup, protectIP, settings.DisableP2P, !settings.EnableWebP2P:
+		return false
+	case !isCaller && !callerIsContact:
+		return false
+	}
+	return true
 }
 
 // Dial starts ICE with the peer and returns once local credentials exist; the

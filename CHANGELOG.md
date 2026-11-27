@@ -7,6 +7,10 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### p2p — P2P gate — `implemented`
+
+- `p2p.Allowed`: no P2P for a group call, with Protect IP on (`disallow_all_p2p`), when the server sends `disable_p2p` or no `enable_web_p2p`, or for a callee whose caller is not a contact (WA's `initP2PConnectionIfEnabled` + `is_p2p_disabled`). Table test; `Dial` and the connection are still stubs.
+
 ### signaling — web P2P type 13 transport — `implemented`
 
 - `BuildWebP2PTransport` / `ParseWebP2PTransport` write and read `<transport transport-message-type="13">` in the WA wasm serializer's layout (ice-ufrag/ice-pwd attrs, `<te priority>` per candidate, `<net>`, `<certificate>`). Unit round-trip tests only; NOT VALIDATED against a real exchange.
