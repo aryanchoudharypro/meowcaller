@@ -7,6 +7,10 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### engine — follow the phone to an FNA relay in a group call — `implemented`
+
+- When a three-person group call dropped to two, the server's new relay list put an FNA relay (`fdel1c03`) first. The phone moved there, but group relay selection skipped FNA relays, so we moved to `del2c01` and heard nothing from then on. FNA relays are now usable for a group allocation like any other, so we land on the same first-listed relay as the phone. Unit tests only; NOT VALIDATED live.
+
 ### engine — tell each group participant our mute state — `implemented`
 
 - In a tester's group call the person who joined after us heard the others but never us. The phones send `mute_v2` to every participant whose audio stream they set up (WA's `create_and_connect_audio_stream_for_participant` -> `wa_system_make_and_send_mute_v2_msg`), and re-send it whenever someone new connects; we sent none. We now send our mute state to each participant as they connect, and a mute toggle in a group call goes to each connected participant instead of `<call-id>@call`. Unit tests only; NOT VALIDATED live.

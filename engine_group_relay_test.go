@@ -161,14 +161,21 @@ func TestSelectGroupRelayEndpointFollowsTheAllocationsFirstRelay(t *testing.T) {
 		t.Fatalf("target = %+v alreadyBound=%v ok=%v, want a redial for the moved address", target, alreadyBound, ok)
 	}
 
-	// Endpoints without a token, and FNA ones, are skipped.
+	// Endpoints without a token are skipped.
 	group.endpoints = []relayEndpoint{
-		{relayName: "fna1c01", isFNA: true, addresses: []relayAddress{{ipv4: "10.0.0.1", port: 3478}}},
 		{relayName: "ccu2c02", tokenID: 9, addresses: []relayAddress{{ipv4: "10.0.0.2", port: 3478}}},
 		{relayName: "maa5c01", tokenID: 0, addresses: []relayAddress{{ipv4: "10.0.0.3", port: 3478}}},
 	}
 	if target, _, ok = selectGroupRelayEndpoint(bound, group); !ok || target.relayName != "maa5c01" {
 		t.Fatalf("target = %+v ok=%v, want maa5c01", target, ok)
+	}
+
+	// A listed-first FNA relay is where the phone goes in a two-person call.
+	group.endpoints = append([]relayEndpoint{
+		{relayName: "fdel1c03", isFNA: true, tokenID: 0, addresses: []relayAddress{{ipv4: "10.0.0.1", port: 3478}}},
+	}, group.endpoints...)
+	if target, _, ok = selectGroupRelayEndpoint(bound, group); !ok || target.relayName != "fdel1c03" || !target.isFNA {
+		t.Fatalf("target = %+v ok=%v, want the FNA fdel1c03", target, ok)
 	}
 }
 

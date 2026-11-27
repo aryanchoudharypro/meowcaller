@@ -237,15 +237,18 @@ const webClientRelayPort = 3478
 // the call happens to be bound to already is NOT kept just because the
 // allocation still lists it: the phones move to the first endpoint and a
 // client left on a later one hears nobody (live capture, 2026-10-03, bom5c02
-// kept while both phones went to del2c03). alreadyBound reports whether the
-// chosen endpoint is one the call is connected to, so no redial is needed.
+// kept while both phones went to del2c03). An FNA relay counts too: once a
+// group call is down to two people the server lists one first and the phone
+// moves there (live capture, 2026-11-27, phone on fdel1c03 while we sat on
+// del2c01 and heard nothing). alreadyBound reports whether the chosen
+// endpoint is one the call is connected to, so no redial is needed.
 func selectGroupRelayEndpoint(bound []relayEndpoint, groupRelay *relayData) (target relayEndpoint, alreadyBound bool, ok bool) {
 	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/d9f78b806f1f4ca80c8008caa5846e5d542c2c55/wacore/src/voip/engine.rs#L3743-L3760
 	if groupRelay == nil {
 		return relayEndpoint{}, false, false
 	}
 	usable := func(endpoint *relayEndpoint) bool {
-		return !endpoint.isFNA && len(endpoint.addresses) != 0 &&
+		return len(endpoint.addresses) != 0 &&
 			endpoint.addresses[0].ipv4 != "" && endpoint.addresses[0].port != 0 &&
 			int(endpoint.tokenID) < len(groupRelay.relayTokens) &&
 			len(groupRelay.relayTokens[endpoint.tokenID]) != 0
