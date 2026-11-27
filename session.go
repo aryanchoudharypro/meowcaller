@@ -162,6 +162,10 @@ type MediaPipeline struct {
 	sendMu       sync.Mutex
 	sendKeys     srtp.E2eSrtpKeys
 	recvKeys     srtp.E2eSrtpKeys
+	// prevRecvKeys are the receive keys the last group rekey replaced. They
+	// never authenticate media; they only let a failure say which key the
+	// sender is still on.
+	prevRecvKeys srtp.E2eSrtpKeys
 	warpMITagLen int
 	stream       *rtp.RtpStream
 	sendRoc      srtp.RocTracker
@@ -232,14 +236,39 @@ func (p *MediaPipeline) installSendKeys(sendKeys srtp.E2eSrtpKeys) {
 func (p *MediaPipeline) installRecvKeysPreservingROC(recvKeys srtp.E2eSrtpKeys) {
 	// Source of truth: https://github.com/purpshell/meowcaller/blob/cbe1446dabb5842362b1a4362d4100ec15d8254f/datasheets/group-media-key-epoch.md#L122-L136
 	p.recvMu.Lock()
+	if recvKeys != p.recvKeys {
+		p.prevRecvKeys = p.recvKeys
+	}
 	p.recvKeys = recvKeys
 	p.recvMu.Unlock()
+}
+
+// matchesPrevRecvKeys reports whether a packet that failed authentication
+// carries a valid tag under the keys the last group rekey replaced. It changes
+// no receive state.
+func (p *MediaPipeline) matchesPrevRecvKeys(packet []byte) bool {
+	if len(packet) < 12+p.warpMITagLen {
+		return false
+	}
+	withoutTag := packet[:len(packet)-p.warpMITagLen]
+	header, ok := rtp.ParseRtpHeader(withoutTag)
+	if !ok {
+		return false
+	}
+	p.recvMu.Lock()
+	defer p.recvMu.Unlock()
+	if p.prevRecvKeys == (srtp.E2eSrtpKeys{}) {
+		return false
+	}
+	roc := p.recvRoc.EstimateRoc(header.SequenceNumber)
+	return srtp.VerifyWarpMITag(p.prevRecvKeys.AuthKey[:], withoutTag, roc, p.warpMITagLen, packet[len(withoutTag):], p.log)
 }
 
 func (p *MediaPipeline) installRecvKeys(recvKeys srtp.E2eSrtpKeys) {
 	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/aafac5cf46e770f59a1ef2f842d2404154038692/wacore/src/voip/session.rs#L171-L187
 	p.recvMu.Lock()
 	p.recvKeys = recvKeys
+	p.prevRecvKeys = srtp.E2eSrtpKeys{}
 	p.recvRoc = srtp.RecvRocTracker{}
 	p.auxRoc = nil
 	p.recvMu.Unlock()

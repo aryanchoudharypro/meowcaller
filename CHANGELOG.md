@@ -7,6 +7,10 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### engine — say which key a failing group participant is on — `implemented`
+
+- After a tester added a third person to a 1:1 call, the original peer's audio failed authentication for as long as the call stayed a group call. The first failure per participant per key epoch now logs whether the packet matches the receive keys the last rekey replaced (`matches_previous_keys`). Those keys never authenticate media; they only diagnose. Diagnostic only.
+
 ### engine — tell each group participant our network — `implemented`
 
 - Phones send every participant they connect to in a group call a `<transport transport-message-type="4">` with their `<net medium>`, which the peer's bandwidth estimate reads; we sent none. We now send it alongside our mute state as each participant connects. Unit tests only; NOT VALIDATED live.

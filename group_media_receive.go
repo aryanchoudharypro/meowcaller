@@ -86,6 +86,9 @@ type participantAudioReceiver struct {
 	codecProbe  inboundCodecProbe
 	rtpClock    rtpClockScaler
 	opusDecoder *standardOpusDecoder
+	// keyMismatchNoted is set once this receiver's audio failure has been
+	// diagnosed since the last epoch, so the diagnosis logs once.
+	keyMismatchNoted bool
 }
 
 type installedGroupRawEpoch struct {
@@ -724,6 +727,7 @@ func (r *participantReceiveRegistry) installPreparedGroupRawEpochLocked(prepared
 		sender.installKeys(prepared.sendRTCPKeys)
 	}
 	for receiver, keys := range prepared.receiveKeys {
+		receiver.keyMismatchNoted = false
 		receiver.pipe.installRecvKeysPreservingROC(keys)
 		receiver.videoPipe.installRecvKeysPreservingROC(keys)
 		receiver.appDataPipe.installRecvKeysPreservingROC(keys)
@@ -972,6 +976,17 @@ func (r *participantReceiveRegistry) DecodeAudio(packet []byte) (decodedParticip
 			Uint32("ssrc", header.Ssrc).
 			Str("participant_id", receiver.participantID).
 			Msg("participant audio failed authentication")
+		if !receiver.keyMismatchNoted {
+			receiver.keyMismatchNoted = true
+			r.log.Info().
+				Str("call_id", r.callID).
+				Uint32("ssrc", header.Ssrc).
+				Str("participant_id", receiver.participantID).
+				Bool("has_epoch", r.hasEpoch).
+				Uint32("epoch_transaction_id", r.installedEpoch.transactionID).
+				Bool("matches_previous_keys", receiver.pipe.matchesPrevRecvKeys(packet)).
+				Msg("participant audio does not match the current group key")
+		}
 		return decodedParticipantAudio{}, false
 	}
 	return r.decodeAuthenticatedAudio(receiver, authenticatedHeader, payload), true

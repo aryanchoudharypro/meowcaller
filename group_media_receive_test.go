@@ -1555,3 +1555,30 @@ func TestParticipantReceiveRegistryAuthenticatesDualStreamScreenShare(t *testing
 		t.Fatal("departed participant screen share remained active")
 	}
 }
+
+func TestPreviousKeysOnlyDiagnoseAFailedPacket(t *testing.T) {
+	callKey := iota32()
+	rawKey := bytes.Repeat([]byte{0x5a}, 32)
+	self := mediaTestJID("111111111111111", 14)
+	peer := mediaTestJID("222222222222222", 0)
+	added := mediaTestJID("333333333333333", 43)
+	pending := mediaTestJID("444444444444444", 63)
+	registry, err := newParticipantReceiveRegistry("CID", callKey, self.String(), peer.String(), nil)
+	if err != nil {
+		t.Fatalf("new registry: %v", err)
+	}
+	if err = registry.ApplyGroupUpdate(mediaTestGroupUpdate(self, peer, added, pending, 17, true)); err != nil {
+		t.Fatalf("apply roster: %v", err)
+	}
+	if err = registry.ApplyGroupRawEpoch(17, rawKey); err != nil {
+		t.Fatalf("apply raw epoch: %v", err)
+	}
+	old, _ := protectParticipantRTP(t, callKey, self, peer, 0, rtp.RtpPayloadTypeOpus, []byte{0x01, 0x02})
+	if _, ok := registry.DecodeAudio(old); ok {
+		t.Fatal("audio on the pre-rekey keys was accepted")
+	}
+	receiver := registry.byDeviceID[rtp.FormatE2ESrtpParticipantID(peer.String())]
+	if receiver == nil || !receiver.keyMismatchNoted || !receiver.pipe.matchesPrevRecvKeys(old) {
+		t.Fatal("the failure was not diagnosed as the pre-rekey keys")
+	}
+}
