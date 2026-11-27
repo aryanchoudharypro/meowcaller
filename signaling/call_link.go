@@ -156,6 +156,12 @@ func BuildWaitingRoomHeartbeat(callID string, creator types.JID, requestID strin
 	return buildWaitingRoomRequest("heartbeat", callID, creator, requestID, waBinary.Attrs{"type": "waiting_room"}, nil)
 }
 
+// BuildWaitingRoomLeave leaves a link call's waiting room before being let in.
+func BuildWaitingRoomLeave(callID string, creator types.JID, requestID string) waBinary.Node {
+	// Source of truth: wasm serialize_waiting_room_leave (func 14141, waiting_room.cc): populate_common_call_attr only, no children.
+	return buildWaitingRoomRequest("waiting_room_leave", callID, creator, requestID, nil, nil)
+}
+
 // BuildWaitingRoomAdmit admits one pending user.
 func BuildWaitingRoomAdmit(callID string, creator, user types.JID, requestID string) waBinary.Node {
 	// Source of truth: https://github.com/tulir/whatsmeow/blob/3775fbadf88fdf44ada62ae5c5db5d7cc6f26259/voip/call_link.go#L157-L171

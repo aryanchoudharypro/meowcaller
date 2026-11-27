@@ -7,6 +7,10 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### signaling — leave a waiting room — `implemented`
+
+- `BuildWaitingRoomLeave`: `<waiting_room_leave call-id call-creator/>` (wasm `serialize_waiting_room_leave`). Hanging up while still in a link call's waiting room now sends it instead of `<terminate>`. Builder test passes; NOT VALIDATED live.
+
 ### p2p — native P2P key confirmed — `planned`
 
 - Datasheet: the P2P key is read from wasm func 740 (the HKDF callback behind `derive_e2e_keys`): bytes [30:46] of the 46-byte HKDF output whose [0:30] is the SRTP key. No longer an assumption.

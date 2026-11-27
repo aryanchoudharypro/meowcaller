@@ -1109,6 +1109,10 @@ func (e *engine) hangup(c *Call) error {
 	}
 	term := signaling.BuildTerminate(&signaling.TerminateParams{CallID: c.id, To: to, CallCreator: creator})
 	term.Attrs["id"] = e.nextCallNodeID()
+	if c.State() == CallPhaseWaitingRoom && m != nil && !m.creator.IsEmpty() {
+		// A waiting user is not a member yet; WA's engine leaves with waiting_room_leave.
+		term = signaling.BuildWaitingRoomLeave(c.id, m.creator, e.nextCallNodeID())
+	}
 	e.finishCall(c.id, "hangup")
 	if err := e.transmitCallNode(context.Background(), term); err != nil {
 		return fmt.Errorf("send terminate: %w", err)

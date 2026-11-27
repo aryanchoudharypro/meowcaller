@@ -132,3 +132,12 @@ func TestWaitingRoomUpdateAndAck(t *testing.T) {
 		t.Fatalf("ACK = %+v", ack)
 	}
 }
+
+func TestBuildWaitingRoomLeave(t *testing.T) {
+	creator := types.NewJID("123", types.HiddenUserServer)
+	node := BuildWaitingRoomLeave("CALLID", creator, "req1")
+	kids := node.GetChildren()
+	if node.Tag != "call" || len(kids) != 1 || kids[0].Tag != "waiting_room_leave" || kids[0].Attrs["call-id"] != "CALLID" || len(kids[0].GetChildren()) != 0 {
+		t.Fatalf("unexpected node %v", node)
+	}
+}
