@@ -7,6 +7,10 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### p2p — web peer-to-peer call path datasheet — `planned`
+
+- Datasheet `datasheets/web-p2p.md`: WA Web's direct path (ICE, DTLS, `wa-web-p2p` SCTP channel, `<transport transport-message-type="13">` with ice-ufrag/ice-pwd, `<te>` candidates and `<certificate>`), gated on Protect IP being off and the server's call settings. Reference pin UNMAPPED (whatsapp-rust has no web P2P); no vector yet. No code.
+
 ### signaling/engine — group relaylatency answers carry the relay transaction — `implemented`
 
 - Phones' group-call `<relaylatency>` carries `transaction-id` (the group relay transaction), and WA's `serialize_relay_latency` writes it on every answer. Ours had none, so a phone may not count our answer for the group relay election. The answer now copies the probe's `transaction-id`; 1:1 answers are unchanged. Untested live.
