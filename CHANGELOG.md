@@ -7,6 +7,10 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### p2p — web P2P connection — `implemented`
+
+- `p2p.Dial` / `Conn`: ICE through `pion/ice` (UDP host + server-reflexive; STUN = up to 10 relay addresses + `edge-stun.facebook.com:3478`; caller controlling), DTLS with WA Web's roles (client only as caller toward a web peer) checked against the signalled sha-256 fingerprint, SCTP, and the negotiated id-0 `wa-web-p2p` channel (unordered, no retransmits, like WA's `BASE_DATA_CHANNEL_OPTIONS`). Sends our credentials at once and each candidate as found; buffers up to 20 remote candidates; a new remote ufrag returns `ErrPeerRestart`; 30 s connect timeout. Loopback test passes; NOT VALIDATED live. Not wired into the engine yet.
+
 ### p2p — P2P gate — `implemented`
 
 - `p2p.Allowed`: no P2P for a group call, with Protect IP on (`disallow_all_p2p`), when the server sends `disable_p2p` or no `enable_web_p2p`, or for a callee whose caller is not a contact (WA's `initP2PConnectionIfEnabled` + `is_p2p_disabled`). Table test; `Dial` and the connection are still stubs.
