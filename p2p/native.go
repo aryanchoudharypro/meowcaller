@@ -27,7 +27,7 @@ type NativeConn struct{}
 func NativeKey(e2eKeys []byte) ([16]byte, error) {
 	// Source of truth: https://github.com/aryanchoudharypro/meowcaller/blob/7c7b983ce80af1c09b620fd45fe902c0221c09d2/datasheets/native-p2p.md#L217-L221
 	// TODO
-	// agent suggestion: require len(e2eKeys) >= 46 and return e2eKeys[30:46] (ASSUMPTION from derive_e2e_keys copying 30 SRTP bytes then 16 P2P bytes).
+	// agent suggestion: require len(e2eKeys) >= 46 and return e2eKeys[30:46] (wasm func 740: HKDF out[30:46]).
 	// human input:
 	return [16]byte{}, errNotImplemented
 }

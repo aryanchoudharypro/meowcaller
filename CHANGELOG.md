@@ -7,6 +7,10 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### p2p — native P2P key confirmed — `planned`
+
+- Datasheet: the P2P key is read from wasm func 740 (the HKDF callback behind `derive_e2e_keys`): bytes [30:46] of the 46-byte HKDF output whose [0:30] is the SRTP key. No longer an assumption.
+
 ### p2p — native P2P — `scaffolded`
 
 - `p2p/native.go`: `NativeKey`, `IsNativePeerMsg`, `BuildNativeBind`, `VerifyNativeBind`, `DialNative` / `NativeConn` envelopes with stub bodies and suggestions from `datasheets/native-p2p.md`. KAT skipped: no vector.

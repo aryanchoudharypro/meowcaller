@@ -214,11 +214,21 @@ MESSAGE-INTEGRITY fails, logs "Received a valid e2e bind probe response from
 P2P" on a good response, and rejects P2P messages on the callee side before
 the call is accepted.
 
-### P2P key (`generate_srtp_and_p2p_keys_for_participant`, func 12850)
+### P2P key (`generate_srtp_and_p2p_keys_for_participant` 12850 → `derive_e2e_keys` 12855 → func 740)
 
-Calls `derive_e2e_keys` (func 12855) and copies 30 bytes of SRTP master key
-and salt, then 16 bytes of P2P key. meowcaller already derives 46 bytes
-(HKDF-SHA256, zero salt, callKey[:32], participant LID) and uses [0:30].
+`derive_e2e_keys` calls a function pointer (memory 1583504, set to table index
+317 = func 740 at init) that fills a struct, then copies 30 bytes from offset 0
+(SRTP) and 16 bytes from offset 260 (P2P key). Func 740, WAT:
+
+```
+  memory.fill out46, 0, 46
+  call 1301 native_hkdf_extract_and_expand(out46, 46, callKey, callKeyLen, salt=0, saltLen=0, info=participant, strlen(participant))
+  memcpy(struct+0,   out46+0,  30); struct.srtpLen(+256) = 30
+  memcpy(struct+260, out46+30, 16); struct.p2pLen(+292)  = 16
+```
+
+So the P2P key is bytes [30:46] of the same 46-byte HKDF output meowcaller
+already uses for SRTP ([0:30]). Read from the code, not assumed.
 
 ## Go envelope
 
@@ -249,8 +259,6 @@ func (c *NativeConn) Close() error
 
 ## Implementation suggestions (guidance, not proof)
 
-- ASSUMPTION: the P2P key is bytes [30:46] of the 46-byte e2e derivation; a
-  wrong key shows as the peer dropping every bind ("integrity check failed").
 - ASSUMPTION: after a pair answers, media is the same raw SRTP/RTCP we send
   to a native (UDP) relay, sent to the peer address.
 - Our candidates: host addresses of the media socket plus the XOR-MAPPED
