@@ -7,6 +7,14 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### p2p — native P2P datasheet — `planned`
+
+- `datasheets/native-p2p.md`: WA's native direct path read from the VoIP wasm (two STUN modes, the `0x74616877` peer cookie, the legacy bind builder keyed with the 16-byte P2P key). No vector; pin `UNMAPPED`.
+
+### engine — log peer transports — `implemented`
+
+- Each peer `<transport>` that is not type 13 is logged at debug level with its type, `p2p-cand-round` and `<te>` count, so a live call shows whether phones send P2P candidates.
+
 ### engine — try the web P2P path beside the relays — `implemented`
 
 - A 1:1 call now starts `p2p.Dial` next to its relays when `p2p.Allowed` says so: Protect IP off (`Client.SetProtectIP`), the server's `options.disable_p2p` off and `options.enable_web_p2p` on, and for an incoming call a caller who is a contact (`Client.SetCallerIsContact`). Our type 13 transports go to the peer; theirs are applied (a peer ICE restart closes the direct path). Once open, packets are also sent over the direct path and what it delivers joins the relays' inbound stream. Relays stay up throughout. Every server blob seen so far has `disable_p2p=1` and no `enable_web_p2p`, so this does not run today. NOT VALIDATED live; which bytes WA sends over the direct path is an assumption (the same as over the relay).
