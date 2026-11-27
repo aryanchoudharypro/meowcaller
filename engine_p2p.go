@@ -112,6 +112,15 @@ func (e *engine) onWebP2PTransport(ev *events.CallTransport) bool {
 		}
 	}
 	if typ, _ := tr.Attrs["transport-message-type"].(string); typ != signaling.TransportTypeWebP2P {
+		round, _ := tr.Attrs["p2p-cand-round"].(string)
+		te := 0
+		for _, c := range tr.GetChildren() {
+			if c.Tag == "te" || c.Tag == "te2" {
+				te++
+			}
+		}
+		e.c.log.Debug().Str("call_id", ev.CallID).Str("transport_type", typ).Str("p2p_cand_round", round).
+			Int("te_count", te).Msg("p2p: peer transport seen")
 		return false
 	}
 	t, err := signaling.ParseWebP2PTransport(*tr, e.c.log)
