@@ -1,11 +1,13 @@
 package meowcaller
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
 	"time"
 
+	"github.com/purpshell/meowcaller/p2p"
 	"github.com/purpshell/meowcaller/relay"
 )
 
@@ -39,6 +41,9 @@ type relayFanout struct {
 
 	mu     sync.Mutex
 	closed bool
+	// direct is the open direct (P2P) path, if any: every packet also goes
+	// over it, and what it delivers joins the relays' inbound stream.
+	direct *p2p.Conn
 	// rebound is set once Rebind collapses the fanout onto one relay; a
 	// relay that finishes connecting after that is not wanted.
 	rebound bool
@@ -120,6 +125,7 @@ func (f *relayFanout) Send(data []byte) (int, error) {
 	chans := f.chans
 	f.mu.Unlock()
 
+	f.sendDirect(data)
 	sent := false
 	var lastErr error
 	for _, ch := range chans {
@@ -183,6 +189,7 @@ func (f *relayFanout) SendElected(data []byte) (int, error) {
 			f.onElected(changed)
 		}
 		if best >= 0 {
+			f.sendDirect(data)
 			return chans[best].Send(data)
 		}
 	}
@@ -408,4 +415,54 @@ func (r *rtpReplayFilter) Duplicate(ssrc uint32, seq uint16) bool {
 	ring.seen[word] |= 1 << bit
 	ring.seq[slot] = seq
 	return false
+}
+
+// attachP2P adds a direct path beside the relays once it opens.
+func (f *relayFanout) attachP2P(conn *p2p.Conn) {
+	go func() {
+		select {
+		case <-conn.Opened():
+		case <-conn.Done():
+			return
+		case <-f.done:
+			return
+		}
+		f.mu.Lock()
+		if f.closed {
+			f.mu.Unlock()
+			return
+		}
+		f.direct = conn
+		f.mu.Unlock()
+		for {
+			pkt, err := conn.Recv(context.Background())
+			if err != nil {
+				return
+			}
+			select {
+			case f.packets <- pkt:
+			case <-f.done:
+				return
+			default:
+			}
+		}
+	}()
+}
+
+// detachP2P drops a direct path that ended.
+func (f *relayFanout) detachP2P(conn *p2p.Conn) {
+	f.mu.Lock()
+	if f.direct == conn {
+		f.direct = nil
+	}
+	f.mu.Unlock()
+}
+
+func (f *relayFanout) sendDirect(data []byte) {
+	f.mu.Lock()
+	d := f.direct
+	f.mu.Unlock()
+	if d != nil {
+		_ = d.Send(data)
+	}
 }

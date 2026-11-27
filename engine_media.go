@@ -527,6 +527,9 @@ func (e *engine) runMedia(ctx context.Context, callID string, call *Call, callKe
 	// Recv blocks while every relay is down; the call ending must unblock it.
 	stopCloseOnEnd := context.AfterFunc(ctx, func() { _ = ch.Close() })
 	defer stopCloseOnEnd()
+	if !isGroup {
+		go e.startWebP2P(ctx, callID, ch, rd, inbound)
+	}
 	watch := newConnectionWatch(time.Now())
 	_, boundAllocs := ch.snapshot()
 	allocateState := newGroupRelayAllocateStateWithHBHFEC(

@@ -7,6 +7,10 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### engine — try the web P2P path beside the relays — `implemented`
+
+- A 1:1 call now starts `p2p.Dial` next to its relays when `p2p.Allowed` says so: Protect IP off (`Client.SetProtectIP`), the server's `options.disable_p2p` off and `options.enable_web_p2p` on, and for an incoming call a caller who is a contact (`Client.SetCallerIsContact`). Our type 13 transports go to the peer; theirs are applied (a peer ICE restart closes the direct path). Once open, packets are also sent over the direct path and what it delivers joins the relays' inbound stream. Relays stay up throughout. Every server blob seen so far has `disable_p2p=1` and no `enable_web_p2p`, so this does not run today. NOT VALIDATED live; which bytes WA sends over the direct path is an assumption (the same as over the relay).
+
 ### p2p — web P2P connection — `implemented`
 
 - `p2p.Dial` / `Conn`: ICE through `pion/ice` (UDP host + server-reflexive; STUN = up to 10 relay addresses + `edge-stun.facebook.com:3478`; caller controlling), DTLS with WA Web's roles (client only as caller toward a web peer) checked against the signalled sha-256 fingerprint, SCTP, and the negotiated id-0 `wa-web-p2p` channel (unordered, no retransmits, like WA's `BASE_DATA_CHANNEL_OPTIONS`). Sends our credentials at once and each candidate as found; buffers up to 20 remote candidates; a new remote ufrag returns `ErrPeerRestart`; 30 s connect timeout. Loopback test passes; NOT VALIDATED live. Not wired into the engine yet.

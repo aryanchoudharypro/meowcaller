@@ -17,6 +17,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/purpshell/meowcaller/p2p"
 	"github.com/purpshell/meowcaller/signaling"
 	"go.mau.fi/whatsmeow"
 	waBinary "go.mau.fi/whatsmeow/binary"
@@ -43,6 +44,11 @@ type engine struct {
 	// dualStream turns on dual-stream (version 3) screen sharing for calls whose
 	// media starts after it is set: see Client.SetDualStreamScreenShare.
 	dualStream atomic.Bool
+	// protectIP is "Protect IP address in calls": on keeps every call on the
+	// relays. callerIsContact answers whether an incoming caller is a saved
+	// contact (WA skips P2P for one who is not); nil means not.
+	protectIP       atomic.Bool
+	callerIsContact atomic.Pointer[func(types.JID) bool]
 	// joinable holds the group calls we're invited to but not in, keyed by
 	// call-id; onJoinable is told whenever it changes.
 	joinable   map[string]JoinableCall
@@ -128,8 +134,12 @@ type engineCall struct {
 	groupEpochTxID       uint32
 	hasGroupEpoch        bool
 	started              bool
-	cancel               context.CancelFunc // tears down this call's media goroutine
-	waitingRoomCancel    context.CancelFunc
+	// p2pSettings are this call's server P2P gates and p2pConn its direct
+	// path attempt, if one runs.
+	p2pSettings       p2p.VoipSettings
+	p2pConn           *p2p.Conn
+	cancel            context.CancelFunc // tears down this call's media goroutine
+	waitingRoomCancel context.CancelFunc
 	// heartbeatCancel stops the in-call heartbeat. The server ends a group
 	// call whose members stop sending it, about a minute in.
 	heartbeatCancel  context.CancelFunc
@@ -250,6 +260,9 @@ func (e *engine) install() {
 			e.onRelay(ev.CallID, ev.Data)
 			e.onRelayLatency(ev)
 		case *events.CallTransport:
+			if e.onWebP2PTransport(ev) {
+				return
+			}
 			e.onRelay(ev.CallID, ev.Data)
 		case *events.CallTerminate:
 			e.onTerminate(ev.CallID, ev.Reason)
@@ -1509,6 +1522,7 @@ func (e *engine) applyVoipSettingsCodec(m *engineCall, node *waBinary.Node, call
 		} else {
 			m.localCodec = selectAudioCodec(vs)
 			m.maxAudioRate = vs.MaxAudioRate()
+			m.p2pSettings = p2p.VoipSettings{DisableP2P: vs.DisableP2P, EnableWebP2P: vs.EnableWebP2P}
 			e.lastMaxAudioRate = m.maxAudioRate
 			if m.call != nil {
 				m.call.dtx.Store(vs.DTX)

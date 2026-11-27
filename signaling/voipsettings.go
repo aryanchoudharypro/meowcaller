@@ -66,6 +66,11 @@ type VoipSettings struct {
 	NetHealthSamples    int
 	NetHealthMaxBanners int
 	NetHealthMaxSounds  int
+	// DisableP2P mirrors options.disable_p2p and EnableWebP2P
+	// options.enable_web_p2p (the wasm's apply_callee_voip_params); together
+	// with Protect IP they gate the direct path.
+	DisableP2P   bool
+	EnableWebP2P bool
 }
 
 // MaxAudioRate is the highest audio sampling rate these settings let a call
@@ -165,6 +170,8 @@ func ParseVoipSettings(raw []byte, log ...zerolog.Logger) (*VoipSettings, error)
 			NetHealthSamples      flexString  `json:"net_health_ping_loss_sample_size"`
 			NetHealthMaxBanners   flexString  `json:"net_health_max_sent_banner"`
 			NetHealthMaxSounds    flexString  `json:"net_health_max_sound_alert_audio"`
+			DisableP2P            flexString  `json:"disable_p2p"`
+			EnableWebP2P          flexString  `json:"enable_web_p2p"`
 		} `json:"options"`
 		AudioInit struct {
 			DriverSamplingRateMax flexString `json:"driver_sampling_rate_max"`
@@ -199,6 +206,8 @@ func ParseVoipSettings(raw []byte, log ...zerolog.Logger) (*VoipSettings, error)
 		NetHealthSamples:       atoiOrZero(string(doc.Options.NetHealthSamples)),
 		NetHealthMaxBanners:    atoiOrZero(string(doc.Options.NetHealthMaxBanners)),
 		NetHealthMaxSounds:     atoiOrZero(string(doc.Options.NetHealthMaxSounds)),
+		DisableP2P:             settingIsOn(string(doc.Options.DisableP2P)),
+		EnableWebP2P:           settingIsOn(string(doc.Options.EnableWebP2P)),
 	}
 	lg.Debug().
 		Bool("use_mlow_codec_v1", vs.UseMlowCodecV1).
