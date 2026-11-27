@@ -7,6 +7,10 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### signaling/engine — group relaylatency answers carry the relay transaction — `implemented`
+
+- Phones' group-call `<relaylatency>` carries `transaction-id` (the group relay transaction), and WA's `serialize_relay_latency` writes it on every answer. Ours had none, so a phone may not count our answer for the group relay election. The answer now copies the probe's `transaction-id`; 1:1 answers are unchanged. Untested live.
+
 ### engine — say which key a failing group participant is on — `implemented`
 
 - After a tester added a third person to a 1:1 call, the original peer's audio failed authentication for as long as the call stayed a group call. The first failure per participant per key epoch now logs whether the packet matches the receive keys the last rekey replaced (`matches_previous_keys`). Those keys never authenticate media; they only diagnose. Diagnostic only.

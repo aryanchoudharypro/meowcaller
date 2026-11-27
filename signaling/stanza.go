@@ -262,6 +262,9 @@ type RelayLatencyParams struct {
 	RelayName    string
 	AddressBytes []byte
 	Devices      []types.JID // omit for inbound callee
+	// TransactionID is the group relay transaction the probe answers; empty
+	// in 1:1 calls, where the phones send none.
+	TransactionID string
 }
 
 // BuildRelayLatency builds <relaylatency> with a <te latency relay_name> and an
@@ -284,7 +287,11 @@ func BuildRelayLatency(p *RelayLatencyParams, log ...zerolog.Logger) waBinary.No
 	if len(p.Devices) > 0 {
 		children = append(children, destinationTo(p.Devices))
 	}
-	return callWrap(p.To, nil, offerAction("relaylatency", p.CallID, p.CallCreator, children))
+	action := offerAction("relaylatency", p.CallID, p.CallCreator, children)
+	if p.TransactionID != "" {
+		action.Attrs["transaction-id"] = p.TransactionID
+	}
+	return callWrap(p.To, nil, action)
 }
 
 // BuildHeartbeat builds <call to={callID}@call id=…><heartbeat …/></call>.

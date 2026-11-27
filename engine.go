@@ -1201,6 +1201,9 @@ func (e *engine) onRelayLatency(ev *events.CallRelayLatency) {
 	}
 	e.mu.Unlock()
 
+	// Group probes name the relay transaction they measured, and WA's
+	// serialize_relay_latency writes it back on the answer.
+	transactionID := rl.AttrGetter().OptionalString("transaction-id")
 	var probes []rlProbe
 	for i := range rl.GetChildren() {
 		te := &rl.GetChildren()[i]
@@ -1221,12 +1224,13 @@ func (e *engine) onRelayLatency(ev *events.CallRelayLatency) {
 	}
 	for _, p := range probes {
 		resp := signaling.BuildRelayLatency(&signaling.RelayLatencyParams{
-			CallID:       ev.CallID,
-			To:           ev.From,
-			CallCreator:  ev.CallCreator,
-			LatencyMs:    p.latency,
-			RelayName:    p.relayName,
-			AddressBytes: p.addr,
+			CallID:        ev.CallID,
+			To:            ev.From,
+			CallCreator:   ev.CallCreator,
+			LatencyMs:     p.latency,
+			RelayName:     p.relayName,
+			AddressBytes:  p.addr,
+			TransactionID: transactionID,
 		})
 		resp.Attrs["id"] = e.c.wa.GenerateMessageID()
 		if err := e.c.wa.DangerousInternals().SendNode(context.Background(), resp); err != nil {

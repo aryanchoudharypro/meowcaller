@@ -180,6 +180,15 @@ func TestRelayLatencyEncodingAndHeartbeat(t *testing.T) {
 	if _, ok := getChild(t, action, "destination"); !ok {
 		t.Error("destination missing")
 	}
+	if _, ok := attrString(action, "transaction-id"); ok {
+		t.Error("1:1 relaylatency must not carry a transaction-id")
+	}
+	group := contentNodes(t, BuildRelayLatency(&RelayLatencyParams{
+		CallID: "CID", To: peer, CallCreator: creator, LatencyMs: 45, RelayName: "gru1c02", TransactionID: "1",
+	}))[0]
+	if txn, _ := attrString(group, "transaction-id"); txn != "1" {
+		t.Errorf("group relaylatency transaction-id = %q, want 1", txn)
+	}
 
 	hb := BuildHeartbeat("CALLID", creator, "DEADBEEF")
 	if to, _ := attrString(hb, "to"); to != "CALLID@call" {
