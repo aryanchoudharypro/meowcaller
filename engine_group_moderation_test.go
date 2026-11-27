@@ -192,3 +192,31 @@ func TestGroupCallStaysJoinableAcrossRosters(t *testing.T) {
 		t.Fatalf("merged = %+v outcome = %v, want a joinable applied roster", merged, outcome)
 	}
 }
+
+func TestGroupCallVideoUsesTheGroupSignaling(t *testing.T) {
+	eng, call, _ := activeGroupCall(t)
+	var sent []string
+	eng.sendCallNode = func(_ context.Context, node waBinary.Node) error {
+		kid := node.GetChildren()[0]
+		sent = append(sent, kid.Tag+":"+kid.AttrGetter().OptionalString("state")+":"+kid.AttrGetter().OptionalString("voip_settings"))
+		return nil
+	}
+	if err := call.StartVideo(); err != nil {
+		t.Fatalf("StartVideo: %v", err)
+	}
+	if m := eng.calls["GCALL"]; !m.localVideo || m.videoGate {
+		t.Fatalf("localVideo=%v videoGate=%v, want our video on with no gate", m.localVideo, m.videoGate)
+	}
+	if err := call.SetVideoEnabled(false); err != nil {
+		t.Fatalf("SetVideoEnabled(false): %v", err)
+	}
+	if err := call.StopVideo(); err != nil {
+		t.Fatalf("StopVideo: %v", err)
+	}
+	if err := call.SetVideoEnabled(true); err != nil {
+		t.Fatalf("SetVideoEnabled(true): %v", err)
+	}
+	if len(sent) != 2 || sent[0] != "video:3:" || sent[1] != "video:3:" {
+		t.Fatalf("sent %v, want two plain upgrade requests and nothing for video off", sent)
+	}
+}

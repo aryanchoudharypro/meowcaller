@@ -372,10 +372,13 @@ func (e *engine) transitionVideo(callID string, transition int) error {
 	}
 	to, creator, sender := m.from, m.creator, m.videoTx
 	localVideoActive := m.localVideo
+	group := m.group
 	switch transition {
 	case signaling.VideoStateUpgradeRequestV2:
 		m.localVideo = true
-		m.videoGate = true
+		// A group call has no peer to accept the upgrade: WA's engine turns
+		// its own video on as soon as the request is out.
+		m.videoGate = !group
 	case signaling.VideoStateUpgradeAccept:
 		if !m.peerVideoUpgrade {
 			e.mu.Unlock()
@@ -401,7 +404,7 @@ func (e *engine) transitionVideo(callID string, transition int) error {
 		if transition == signaling.VideoStateStopped {
 			sender.disable()
 		} else if transition == signaling.VideoStateUpgradeRequestV2 {
-			sender.enable(true)
+			sender.enable(!group)
 		}
 	}
 
@@ -416,11 +419,13 @@ func (e *engine) transitionVideo(callID string, transition int) error {
 	}
 
 	var err error
-	switch transition {
-	case signaling.VideoStateUpgradeRequestV2:
+	switch {
+	case group && transition != signaling.VideoStateUpgradeAccept:
+		err = e.sendGroupVideoState(callID, to, creator, transition)
+	case transition == signaling.VideoStateUpgradeRequestV2:
 		orientation := 0
 		err = send(transition, signaling.VideoDecRequest, &orientation)
-	case signaling.VideoStateUpgradeAccept:
+	case transition == signaling.VideoStateUpgradeAccept:
 		if !localVideoActive {
 			orientation := 0
 			err = send(signaling.VideoStateStopped, "", &orientation)
@@ -428,7 +433,7 @@ func (e *engine) transitionVideo(callID string, transition int) error {
 		if err == nil {
 			err = send(transition, signaling.VideoDecAccept, nil)
 		}
-	case signaling.VideoStateStopped:
+	case transition == signaling.VideoStateStopped:
 		orientation := 0
 		err = send(transition, "", &orientation)
 	}
@@ -455,6 +460,29 @@ func (e *engine) transitionVideo(callID string, transition int) error {
 	return err
 }
 
+// sendGroupVideoState signals a camera change in a group call the way WA's
+// engine does there: turning video on sends the plain upgrade request (state
+// 3, never the 1:1 state 11), and turning it off sends nothing at all, since
+// call_video_downgrade only signals a 1:1 peer. The server refuses a state 0
+// in a group call with a 403.
+func (e *engine) sendGroupVideoState(callID string, to, creator types.JID, transition int) error {
+	// Source of truth: https://github.com/oxidezap/whatspec/blob/46f630441389e703e04ff3fc012192cf80fdd4ba/generated/wasm.lock.json#L1-L4
+	if transition != signaling.VideoStateUpgradeRequestV2 {
+		e.c.log.Debug().Str("call_id", callID).Msg("group call video off is not signaled")
+		return nil
+	}
+	orientation := 0
+	node := signaling.BuildVideoStateWithParams(signaling.VideoStateParams{
+		CallID: callID, To: to, CallCreator: creator, WrapperID: e.nextCallNodeID(),
+		State: signaling.VideoStateUpgradeRequest, Dec: signaling.VideoDecRequest, DeviceOrientation: &orientation,
+	})
+	if err := e.transmitCallNode(context.Background(), node); err != nil {
+		return err
+	}
+	e.c.log.Info().Str("call_id", callID).Msg("asked the group call to turn on our video")
+	return nil
+}
+
 func (e *engine) setVideoEnabled(callID string, enabled bool) error {
 	e.mu.Lock()
 	m := e.calls[callID]
@@ -475,6 +503,7 @@ func (e *engine) setVideoEnabled(callID string, enabled bool) error {
 	m.localVideo = enabled
 	m.videoGate = false
 	to, creator, sender := m.from, m.creator, m.videoTx
+	group := m.group
 	e.mu.Unlock()
 
 	if sender != nil {
@@ -484,15 +513,23 @@ func (e *engine) setVideoEnabled(callID string, enabled bool) error {
 			sender.disable()
 		}
 	}
-	state, dec := signaling.VideoStateDisabled, ""
-	if enabled {
-		state, dec = signaling.VideoStateEnabled, signaling.VideoStateDecH264
+	var err error
+	if group {
+		transition := signaling.VideoStateStopped
+		if enabled {
+			transition = signaling.VideoStateUpgradeRequestV2
+		}
+		err = e.sendGroupVideoState(callID, to, creator, transition)
+	} else {
+		state, dec := signaling.VideoStateDisabled, ""
+		if enabled {
+			state, dec = signaling.VideoStateEnabled, signaling.VideoStateDecH264
+		}
+		err = e.transmitCallNode(context.Background(), signaling.BuildVideoStateWithParams(signaling.VideoStateParams{
+			CallID: callID, To: to, CallCreator: creator, WrapperID: e.nextCallNodeID(),
+			State: state, Dec: dec,
+		}))
 	}
-	node := signaling.BuildVideoStateWithParams(signaling.VideoStateParams{
-		CallID: callID, To: to, CallCreator: creator, WrapperID: e.nextCallNodeID(),
-		State: state, Dec: dec,
-	})
-	err := e.transmitCallNode(context.Background(), node)
 	if err == nil || !enabled {
 		return err
 	}

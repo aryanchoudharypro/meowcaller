@@ -7,6 +7,10 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### engine — camera on/off in a group call the WA way — `implemented`
+
+- In a group call we turned video on with the 1:1 upgrade (state 11, `voip_settings="video"`), which the server ignored, and off with state 0, which it refused with a 403. WA's engine (`call_video_request_upgrade` / `call_video_downgrade`) sends the plain upgrade request (state 3) in a group call and turns its own video on straight away, and sends no stanza at all when video goes off. We now do the same. Unit tests only; NOT VALIDATED live.
+
 ### engine — a refused video state no longer ends the call; left group calls stay joinable — `implemented`
 
 - A tester's group call ended for them alone when the server answered `<video state="0">` with a 403 ack: every error ack tore the call down. Only an error ack to the offer, accept or preaccept ends the call now; any other refused stanza is logged and the call goes on, as WA's per-type ack handlers do. A left group call was also never offered to rejoin, because `joinable="1"` comes only on the offer and its ack and each later roster cleared it; it now carries over. Unit tests only; NOT VALIDATED live.
