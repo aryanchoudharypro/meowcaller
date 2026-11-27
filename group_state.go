@@ -52,6 +52,9 @@ func mergeGroupUpdate(current *groupCallUpdate, update groupCallUpdate) (groupCa
 	if merged.GroupJID.IsEmpty() {
 		merged.GroupJID = current.GroupJID
 	}
+	// Only the offer and its ack say joinable="1"; later rosters leave it out
+	// but the call stays open to latecomers.
+	merged.Joinable = merged.Joinable || current.Joinable
 	known := make(map[types.JID]uint32)
 	for _, participant := range current.Participants {
 		for _, device := range participant.Devices {

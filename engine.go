@@ -1646,14 +1646,21 @@ func (e *engine) applyGroupAckVoipSettings(callID string, ack *waBinary.Node) {
 
 // onCallAck handles an <ack class="call"> node. For an outbound offer the relay
 // allocation arrives here (whatsmeow otherwise drops the ack), which is what lets the
-// caller bring up media. An error ack tears the call down.
+// caller bring up media. An error ack to the offer or accept tears the call down;
+// one to anything else (a video state, a mute) only fails that stanza.
 func (e *engine) onCallAck(ack *waBinary.Node) {
 	if errCode := ack.AttrGetter().String("error"); errCode != "" {
 		callID := ""
 		if en := findChild(ack, "error"); en != nil {
 			callID = en.AttrGetter().String("call-id")
 		}
-		e.c.log.Warn().Str("call_id", callID).Str("error_code", errCode).Msg("call rejected by server")
+		ackType := ack.AttrGetter().OptionalString("type")
+		if !callAckErrorEndsCall(ackType) {
+			e.c.log.Warn().Str("call_id", callID).Str("ack_type", ackType).Str("error_code", errCode).
+				Msg("server refused a call stanza; call goes on")
+			return
+		}
+		e.c.log.Warn().Str("call_id", callID).Str("ack_type", ackType).Str("error_code", errCode).Msg("call rejected by server")
 		e.finishCall(callID, "server:"+errCode)
 		return
 	}
@@ -1686,6 +1693,19 @@ func (e *engine) onCallAck(ack *waBinary.Node) {
 	if ack.AttrGetter().OptionalString("type") == "offer" {
 		e.sendCallerRelayLatency(callID, ack)
 	}
+}
+
+// callAckErrorEndsCall reports whether an error ack of this type means the
+// call itself was refused. WA's engine handles each ack type on its own
+// (handle_offer_ack, handle_transfer_ack, ...) and a refused video state or
+// mute leaves the call up; seen live 2026-11-27, a 403 to <video state="0">
+// in a group call ended it for us while everyone else stayed.
+func callAckErrorEndsCall(ackType string) bool {
+	switch ackType {
+	case "", "offer", "accept", "preaccept":
+		return true
+	}
+	return false
 }
 
 // sendCallerRelayLatency announces, as the caller, the relay we dial to the callee

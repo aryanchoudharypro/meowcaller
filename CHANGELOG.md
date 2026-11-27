@@ -7,6 +7,10 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### engine — a refused video state no longer ends the call; left group calls stay joinable — `implemented`
+
+- A tester's group call ended for them alone when the server answered `<video state="0">` with a 403 ack: every error ack tore the call down. Only an error ack to the offer, accept or preaccept ends the call now; any other refused stanza is logged and the call goes on, as WA's per-type ack handlers do. A left group call was also never offered to rejoin, because `joinable="1"` comes only on the offer and its ack and each later roster cleared it; it now carries over. Unit tests only; NOT VALIDATED live.
+
 ### engine — follow the phone to an FNA relay in a group call — `implemented`
 
 - When a three-person group call dropped to two, the server's new relay list put an FNA relay (`fdel1c03`) first. The phone moved there, but group relay selection skipped FNA relays, so we moved to `del2c01` and heard nothing from then on. FNA relays are now usable for a group allocation like any other, so we land on the same first-listed relay as the phone. Unit tests only; NOT VALIDATED live.

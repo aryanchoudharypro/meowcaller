@@ -172,3 +172,23 @@ func TestNewParticipantIsToldOurMuteState(t *testing.T) {
 		t.Fatalf("told the same participant twice: %v", sent)
 	}
 }
+
+func TestOnlySetupAckErrorsEndTheCall(t *testing.T) {
+	for ackType, want := range map[string]bool{
+		"": true, "offer": true, "accept": true, "preaccept": true,
+		"video": false, "mute_v2": false, "relaylatency": false, "terminate": false,
+	} {
+		if got := callAckErrorEndsCall(ackType); got != want {
+			t.Errorf("callAckErrorEndsCall(%q) = %v, want %v", ackType, got, want)
+		}
+	}
+}
+
+func TestGroupCallStaysJoinableAcrossRosters(t *testing.T) {
+	first := groupCallUpdate{CallID: "GROUP", TransactionID: 9, Joinable: true}
+	later := groupCallUpdate{CallID: "GROUP", TransactionID: 32}
+	merged, outcome := mergeGroupUpdate(&first, later)
+	if outcome != groupUpdateApplied || !merged.Joinable {
+		t.Fatalf("merged = %+v outcome = %v, want a joinable applied roster", merged, outcome)
+	}
+}
