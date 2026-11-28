@@ -24,3 +24,17 @@ func BuildRemoveUser(callID string, creator, user types.JID, requestID string) w
 		Attrs: waBinary.Attrs{"call-id": callID, "call-creator": creator, "jid": user},
 	})
 }
+
+// BuildCancelOffer stops ringing the given users in a group call.
+func BuildCancelOffer(callID string, creator types.JID, users []types.JID, requestID string) waBinary.Node {
+	// Source of truth: wasm serialize_cancel_offer (func 14089 via 15968, group_call.cc): populate_common_call_attr, then one <participant jid> per user, the same shape as serialize_remove.
+	kids := make([]waBinary.Node, 0, len(users))
+	for _, u := range users {
+		kids = append(kids, waBinary.Node{Tag: "participant", Attrs: waBinary.Attrs{"jid": u}})
+	}
+	return callWrap(types.NewJID(callID, "call"), &requestID, waBinary.Node{
+		Tag:     "cancel_offer",
+		Attrs:   waBinary.Attrs{"call-id": callID, "call-creator": creator},
+		Content: kids,
+	})
+}

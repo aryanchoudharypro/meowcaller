@@ -304,3 +304,31 @@ func rosterParticipant(update *groupCallUpdate, target types.JID) (groupCallPart
 	}
 	return groupCallParticipant{}, false
 }
+
+// StopRinging stops ringing someone who was invited to this group call and
+// has not answered yet (WA's cancel_offer).
+func (c *Call) StopRinging(ctx context.Context, user string) error {
+	return c.eng.stopRinging(ctx, c.id, user)
+}
+
+func (e *engine) stopRinging(ctx context.Context, callID, user string) error {
+	// Source of truth: wasm serialize_cancel_offer (func 14089, group_call.cc).
+	if err := e.requireRawCallAdapter(); err != nil {
+		return err
+	}
+	targetLID, err := resolvePeerLID(ctx, e.c.wa, user)
+	if err != nil {
+		return err
+	}
+	creator, err := e.callControlCreator(callID)
+	if err != nil {
+		return err
+	}
+	node := signaling.BuildCancelOffer(callID, creator, []types.JID{targetLID.ToNonAD()}, e.nextCallNodeID())
+	if err := e.transmitCallNode(ctx, node); err != nil {
+		e.c.log.Warn().Err(err).Str("call_id", callID).Msg("send cancel_offer failed")
+		return fmt.Errorf("meowcaller: stop ringing: %w", err)
+	}
+	e.c.log.Info().Str("call_id", callID).Msg("sent cancel_offer")
+	return nil
+}

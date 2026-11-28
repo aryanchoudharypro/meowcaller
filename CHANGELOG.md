@@ -7,6 +7,10 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### engine — stop ringing — `implemented`
+
+- `Call.StopRinging` sends `<cancel_offer call-id call-creator><participant jid/></cancel_offer>` (wasm `serialize_cancel_offer`, same shape as `serialize_remove`) to stop ringing an invited group call member. Builder test passes; NOT VALIDATED live.
+
 ### engine — call reminders — `implemented`
 
 - `Client.OnCallReminder` / `CallReminder`: parses the server's `<group_call_reminder>` (wasm `deserialize_group_call_reminder`: call-id, call-creator, ts, type, `waiting_room`, `group_info`) with WA's seven reminder types (`link_creator_call_started` … `link_creator_waiting_room_multiple_joined`), link token, members and waiting users, like WA Web's `parseGroupCallReminderData`. Parser test passes; NOT VALIDATED live.

@@ -29,3 +29,13 @@ func TestBuildDuration(t *testing.T) {
 		t.Fatalf("unexpected %v", n)
 	}
 }
+
+func TestBuildCancelOffer(t *testing.T) {
+	creator := types.NewJID("1", types.HiddenUserServer)
+	user := types.NewJID("2", types.HiddenUserServer)
+	n := BuildCancelOffer("C1", creator, []types.JID{user}, "r1")
+	c := n.GetChildren()[0]
+	if c.Tag != "cancel_offer" || len(c.GetChildren()) != 1 || c.GetChildren()[0].Attrs["jid"] != user {
+		t.Fatalf("unexpected %v", n)
+	}
+}
