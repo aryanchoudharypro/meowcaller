@@ -22,6 +22,7 @@ type Call struct {
 
 	mu                sync.Mutex
 	phase             CallPhase
+	activeAt          time.Time
 	player            *Player
 	sink              AudioSink
 	onReady           func()
@@ -1121,6 +1122,9 @@ func (c *Call) setPhase(next CallPhase) {
 		return
 	}
 	c.phase = next
+	if next == CallPhaseActive && c.activeAt.IsZero() {
+		c.activeAt = time.Now()
+	}
 	fn := c.onState
 	c.mu.Unlock()
 	if fn != nil {

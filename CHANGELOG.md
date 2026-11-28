@@ -7,6 +7,14 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### engine — call reminders — `implemented`
+
+- `Client.OnCallReminder` / `CallReminder`: parses the server's `<group_call_reminder>` (wasm `deserialize_group_call_reminder`: call-id, call-creator, ts, type, `waiting_room`, `group_info`) with WA's seven reminder types (`link_creator_call_started` … `link_creator_waiting_room_multiple_joined`), link token, members and waiting users, like WA Web's `parseGroupCallReminderData`. Parser test passes; NOT VALIDATED live.
+
+### engine — duration stanza — `implemented`
+
+- A connected 1:1 call now sends `<duration call-id call-creator type="1x1" peer audio_duration video_duration>` to the call server when it ends (wasm `make_and_send_duration_msg` / `serialize_duration`, target `call`). Seconds is an ASSUMPTION. Builder test passes; NOT VALIDATED live.
+
 ### signaling — leave a waiting room — `implemented`
 
 - `BuildWaitingRoomLeave`: `<waiting_room_leave call-id call-creator/>` (wasm `serialize_waiting_room_leave`). Hanging up while still in a link call's waiting room now sends it instead of `<terminate>`. Builder test passes; NOT VALIDATED live.

@@ -59,7 +59,7 @@ func (e *engine) placeGroupCall(
 	m.from = types.NewJID(callID, "call")
 	m.direction = CallDirectionOutgoing
 	m.group = true
-	m.localVideo = opts.Video
+	m.setLocalVideo(opts.Video)
 	m.remoteVideo = opts.Video
 	m.inviteSelfDevice = groupCallDevice{
 		JID: self, CapabilityVersion: 1,
@@ -429,7 +429,7 @@ func (e *engine) joinPublicCallLink(
 	m.creator = result.CallCreator
 	m.from = types.NewJID(result.CallID, "call")
 	m.direction = CallDirectionOutgoing
-	m.localVideo = opts.Video
+	m.setLocalVideo(opts.Video)
 	m.remoteVideo = opts.Video
 	self := e.c.wa.Store.GetLID()
 	m.inviteSelfDevice = groupCallDevice{

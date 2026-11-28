@@ -53,6 +53,7 @@ type engine struct {
 	// call-id; onJoinable is told whenever it changes.
 	joinable   map[string]JoinableCall
 	onJoinable func([]JoinableCall)
+	onReminder func(CallReminder)
 	// ringingOffline holds joinable calls that come from an offline offer
 	// and haven't had the terminate that ends their ringing yet.
 	ringingOffline map[string]bool
@@ -105,6 +106,8 @@ type engineCall struct {
 	ownAudioBits     uint8
 	peerAudioBits    uint8
 	localVideo       bool // this client is sending, or has requested to send, video
+	videoOnAt        time.Time
+	videoTotal       time.Duration
 	remoteVideo      bool // the peer is sending video to this client
 	videoGate        bool // outbound upgrade is waiting for peer acceptance
 	peerVideoUpgrade bool // the peer's inbound upgrade is waiting for local acceptance
@@ -388,7 +391,7 @@ func (e *engine) transitionVideo(callID string, transition int) error {
 	group := m.group
 	switch transition {
 	case signaling.VideoStateUpgradeRequestV2:
-		m.localVideo = true
+		m.setLocalVideo(true)
 		// A group call has no peer to accept the upgrade: WA's engine turns
 		// its own video on as soon as the request is out.
 		m.videoGate = !group
@@ -406,7 +409,7 @@ func (e *engine) transitionVideo(callID string, transition int) error {
 		}
 		m.peerVideoUpgrade = false
 	case signaling.VideoStateStopped:
-		m.localVideo = false
+		m.setLocalVideo(false)
 		m.videoGate = false
 	default:
 		e.mu.Unlock()
@@ -461,7 +464,7 @@ func (e *engine) transitionVideo(callID string, transition int) error {
 			current.peerVideoUpgrade = true
 			current.peerVideoUpgradeAt = time.Now()
 		} else {
-			current.localVideo = false
+			current.setLocalVideo(false)
 			current.videoGate = false
 			currentSender = current.videoTx
 		}
@@ -513,7 +516,7 @@ func (e *engine) setVideoEnabled(callID string, enabled bool) error {
 		e.c.log.Info().Str("call_id", callID).Bool("enabled", enabled).Msg("video enable deferred until accept is sent")
 		return nil
 	}
-	m.localVideo = enabled
+	m.setLocalVideo(enabled)
 	m.videoGate = false
 	to, creator, sender := m.from, m.creator, m.videoTx
 	group := m.group
@@ -549,7 +552,7 @@ func (e *engine) setVideoEnabled(callID string, enabled bool) error {
 
 	e.mu.Lock()
 	if current := e.calls[callID]; current == m {
-		current.localVideo = false
+		current.setLocalVideo(false)
 	}
 	e.mu.Unlock()
 	if sender != nil {
@@ -683,7 +686,7 @@ func (e *engine) placeCall(ctx context.Context, target string, opts CallOptions)
 	m.offeredDevices = append([]types.JID(nil), devices...)
 	m.peerBareJID = peerLID
 	m.ownAudioBits = signaling.AudioRateBits(offerRates)
-	m.localVideo = opts.Video
+	m.setLocalVideo(opts.Video)
 	m.remoteVideo = opts.Video
 	m.inviteSelfDevice = groupCallDevice{
 		JID: self, CapabilityVersion: 1,
@@ -820,7 +823,7 @@ func (e *engine) onOffer(ev *events.CallOffer) {
 	m.direction = CallDirectionIncoming
 	// A <video> child marks a call that starts with both video directions enabled.
 	isVideo := signaling.OfferHasVideo(ev.Data)
-	m.localVideo = isVideo
+	m.setLocalVideo(isVideo)
 	m.remoteVideo = isVideo
 	m.inviteSelfDevice = groupCallDevice{
 		JID: e.c.wa.Store.GetLID(), CapabilityVersion: 1,
@@ -885,7 +888,7 @@ func (e *engine) onGroupOffer(ev *events.CallOffer, update groupCallUpdate) {
 	m.from = types.NewJID(ev.CallID, "call")
 	m.direction = CallDirectionIncoming
 	m.group = true
-	m.localVideo = isVideo
+	m.setLocalVideo(isVideo)
 	m.remoteVideo = isVideo
 	creator := m.creator
 	// The group offer's voip_settings say whether the call uses MLow
@@ -1858,6 +1861,9 @@ func (e *engine) onCallRaw(callNode *waBinary.Node) bool {
 		return false
 	}
 	switch kids[0].Tag {
+	case "group_call_reminder":
+		e.onGroupCallReminder(callNode, &kids[0])
+		return false
 	case "group_update", "enc_rekey", "waiting_room_update", "user_action", "screen_share":
 		// Source of truth: https://github.com/purpshell/meowcaller/blob/36d54857c74e45ccb08f6444a32d2afa13f20be9/datasheets/group-video-reactions.md#L31-L56
 		ack, ok := signaling.BuildCallControlAck(callNode, kids[0].Tag)
@@ -2002,13 +2008,13 @@ func (e *engine) onVideoStanza(v *waBinary.Node) {
 	case signaling.VideoStateDisabled, signaling.VideoStateStopped:
 		m.remoteVideo = false
 	case signaling.VideoStateUpgradeAccept:
-		m.localVideo = true
+		m.setLocalVideo(true)
 		m.videoGate = false
 		announceEnabled = true
 	case signaling.VideoStateUpgradeReject, signaling.VideoStateUpgradeCancel:
 		m.peerVideoUpgrade = false
 		if m.videoGate {
-			m.localVideo = false
+			m.setLocalVideo(false)
 			m.videoGate = false
 			disableSender = true
 		}
@@ -2023,7 +2029,7 @@ func (e *engine) onVideoStanza(v *waBinary.Node) {
 		if err := e.transmitCallNode(context.Background(), node); err != nil {
 			e.mu.Lock()
 			if current := e.calls[callID]; current == m {
-				current.localVideo = false
+				current.setLocalVideo(false)
 				current.videoGate = false
 			}
 			e.mu.Unlock()
@@ -2114,6 +2120,9 @@ func (e *engine) finishCall(callID, reason string) {
 	}
 	if call == nil || call.State() == CallPhaseEnded {
 		return
+	}
+	if m != nil && !m.group {
+		e.sendDuration(callID, m, call)
 	}
 	e.mu.Lock()
 	becameJoinable := e.noteJoinableLocked(callID, m, call.State(), reason, time.Now())
@@ -2586,4 +2595,59 @@ func (e *engine) onPeerBatteryLow(callID string, callNode *waBinary.Node) {
 	if _, fn := m.call.interruptFns(); fn != nil {
 		fn()
 	}
+}
+
+// setLocalVideo records our outbound video state and how long it has been on,
+// for the <duration> stanza.
+func (m *engineCall) setLocalVideo(on bool) {
+	now := time.Now()
+	if m.localVideo && !m.videoOnAt.IsZero() {
+		m.videoTotal += now.Sub(m.videoOnAt)
+		m.videoOnAt = time.Time{}
+	}
+	m.localVideo = on
+	if on {
+		m.videoOnAt = now
+	}
+}
+
+// videoDuration is how long our video has been on so far.
+func (m *engineCall) videoDuration(now time.Time) time.Duration {
+	d := m.videoTotal
+	if m.localVideo && !m.videoOnAt.IsZero() {
+		d += now.Sub(m.videoOnAt)
+	}
+	return d
+}
+
+// sendDuration reports a connected 1:1 call's audio and video time to the
+// call server, as WA's engine does at teardown (send_duration_msg_if_connected).
+func (e *engine) sendDuration(callID string, m *engineCall, call *Call) {
+	// Source of truth: wasm make_and_send_duration_msg (func 12623, call_signaling_sender.cc): only when a duration is above zero; type "1x1" ("genai" for AI calls, which we don't make).
+	call.mu.Lock()
+	activeAt := call.activeAt
+	call.mu.Unlock()
+	if activeAt.IsZero() {
+		return
+	}
+	now := time.Now()
+	e.mu.Lock()
+	creator, video := m.creator, m.videoDuration(now)
+	e.mu.Unlock()
+	audio := now.Sub(activeAt)
+	if audio < time.Second && video < time.Second {
+		return
+	}
+	// ASSUMPTION: seconds, like WA Web's callInfo call/audio/video durations.
+	node := signaling.BuildDuration(&signaling.DurationParams{
+		CallID: callID, CallCreator: creator, Peer: call.peer, Type: "1x1",
+		AudioSeconds: uint32(audio / time.Second), VideoSeconds: uint32(video / time.Second),
+	}, e.nextCallNodeID())
+	go func() {
+		if err := e.transmitCallNode(context.Background(), node); err != nil {
+			e.c.log.Debug().Err(err).Str("call_id", callID).Msg("send duration failed")
+			return
+		}
+		e.c.log.Debug().Str("call_id", callID).Msg("sent duration")
+	}()
 }

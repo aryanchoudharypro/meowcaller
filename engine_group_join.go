@@ -89,7 +89,7 @@ func (e *engine) joinOngoingCall(ctx context.Context, callID string, video bool)
 	m.creator = joinable.Creator
 	m.from = types.NewJID(callID, "call")
 	m.direction = CallDirectionIncoming
-	m.localVideo = video
+	m.setLocalVideo(video)
 	m.remoteVideo = joinable.Video
 	delete(e.joinable, callID)
 	delete(e.ringingOffline, callID)
