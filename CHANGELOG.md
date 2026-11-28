@@ -7,6 +7,10 @@ All notable changes to meowcaller, tracked per module. Format loosely follows
 
 ## [Unreleased]
 
+### signaling — call link approval toggle — `implemented`
+
+- `Client.SetCallLinkApproval` sends WA Web's `<call to=call><waiting_room_toggle enabled link-token media/></call>` (`WASmaxVoipWaitingRoomToggleCallLinkRPC`), the way WA Web's call link popup turns "approve new participants" on or off before a call. This is what WA Web uses to edit a link; it never sends the wasm's `link_edit`. Builder/ack test passes; NOT VALIDATED live.
+
 ### engine — stop ringing — `implemented`
 
 - `Call.StopRinging` sends `<cancel_offer call-id call-creator><participant jid/></cancel_offer>` (wasm `serialize_cancel_offer`, same shape as `serialize_remove`) to stop ringing an invited group call member. Builder test passes; NOT VALIDATED live.

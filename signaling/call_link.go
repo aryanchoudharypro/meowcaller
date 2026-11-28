@@ -403,3 +403,40 @@ func parseCallLinkMedia(value string) (CallLinkMedia, error) {
 	}
 	return media, nil
 }
+
+// BuildCallLinkApprovalToggle turns "approve new participants" on or off for a
+// call link outside a call, as WA Web's call link popup does.
+func BuildCallLinkApprovalToggle(token string, media CallLinkMedia, enabled bool, requestID string) (waBinary.Node, error) {
+	// Source of truth: WA Web WASmaxVoipWaitingRoomToggleCallLinkRPC.makeWaitingRoomToggleCallLinkRequest (2026-11-27 bundle): <call to=call id><waiting_room_toggle enabled link-token media/></call>.
+	if token == "" {
+		return waBinary.Node{}, fmt.Errorf("signaling: call-link token is required")
+	}
+	if err := validateCallLinkMedia(media); err != nil {
+		return waBinary.Node{}, err
+	}
+	value := "0"
+	if enabled {
+		value = "1"
+	}
+	return buildCallServiceRequest(requestID, waBinary.Node{
+		Tag:   "waiting_room_toggle",
+		Attrs: waBinary.Attrs{"enabled": value, "link-token": token, "media": string(media)},
+	})
+}
+
+// ParseCallLinkApprovalToggleAck checks the server's answer to
+// BuildCallLinkApprovalToggle.
+func ParseCallLinkApprovalToggleAck(node *waBinary.Node) error {
+	// Source of truth: WA Web WASmaxVoipWaitingRoomToggleCallLinkRPC parse...Ack / ...Nack: an <ack> with a <waiting_room_toggle> child, or an error.
+	if node == nil || node.Tag != "ack" {
+		return fmt.Errorf("signaling: parse waiting_room_toggle ACK: unexpected envelope")
+	}
+	if errNode, ok := node.GetOptionalChildByTag("error"); ok {
+		code, _ := errNode.Attrs["code"].(string)
+		return fmt.Errorf("signaling: waiting_room_toggle rejected (code %s)", code)
+	}
+	if _, ok := node.GetOptionalChildByTag("waiting_room_toggle"); !ok {
+		return fmt.Errorf("signaling: parse waiting_room_toggle ACK: missing payload")
+	}
+	return nil
+}

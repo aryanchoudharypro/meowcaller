@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/purpshell/meowcaller/signaling"
 	"go.mau.fi/whatsmeow/types"
 )
 
@@ -155,4 +156,29 @@ func normalizeCallLinkToken(raw string) (string, error) {
 		return "", errors.New("meowcaller: invalid WhatsApp call-link URL")
 	}
 	return parts[1], nil
+}
+
+// SetCallLinkApproval turns "approve new participants" on or off for one of
+// your call links before anyone joins (WA Web's toggleWaitingRoomForCallLink).
+func (c *Client) SetCallLinkApproval(ctx context.Context, token string, video, enabled bool) error {
+	if c == nil || c.eng == nil {
+		return errors.New("meowcaller: call-link signaling is unavailable")
+	}
+	if err := c.eng.requireRawCallAdapter(); err != nil {
+		return err
+	}
+	media := signaling.CallLinkMediaAudio
+	if video {
+		media = signaling.CallLinkMediaVideo
+	}
+	requestID := c.eng.nextCallNodeID()
+	node, err := signaling.BuildCallLinkApprovalToggle(token, media, enabled, requestID)
+	if err != nil {
+		return err
+	}
+	response, err := c.eng.requestCall(ctx, node, requestID)
+	if err != nil {
+		return fmt.Errorf("meowcaller: set call link approval: %w", err)
+	}
+	return signaling.ParseCallLinkApprovalToggleAck(response)
 }

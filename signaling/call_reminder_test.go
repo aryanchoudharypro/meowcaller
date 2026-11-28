@@ -39,3 +39,18 @@ func TestBuildCancelOffer(t *testing.T) {
 		t.Fatalf("unexpected %v", n)
 	}
 }
+
+func TestBuildCallLinkApprovalToggle(t *testing.T) {
+	n, err := BuildCallLinkApprovalToggle("TOK", CallLinkMediaVideo, true, "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := n.GetChildren()[0]
+	if n.Attrs["to"] != types.NewJID("", "call") || c.Tag != "waiting_room_toggle" || c.Attrs["enabled"] != "1" || c.Attrs["link-token"] != "TOK" || c.Attrs["media"] != "video" {
+		t.Fatalf("unexpected %v", n)
+	}
+	ok := waBinary.Node{Tag: "ack", Content: []waBinary.Node{{Tag: "waiting_room_toggle"}}}
+	if err := ParseCallLinkApprovalToggleAck(&ok); err != nil {
+		t.Fatal(err)
+	}
+}
